@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b1322" />
+  <title>Plasmora · 本机质粒管理</title>
+  <link rel="icon" type="image/png" href="app-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="compat.css" />
+  <link rel="stylesheet" href="themes.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="noise"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><div class="brand-mark"><img src="app-icon.png" alt="" /></div><div><strong>Plasmora</strong><small>PLASMID LIBRARY</small></div></div>
+    <button class="nav-item active" data-view="library"><span class="nav-icon">◉</span><span>全部质粒</span><span class="nav-count" id="all-count">0</span></button>
+    <button class="nav-item" data-view="favorites"><span class="nav-icon">★</span><span>我的收藏</span><span class="nav-count" id="favorite-count">0</span></button>
+    <button class="nav-item" data-view="recent"><span class="nav-icon">◷</span><span>最近查看</span><span class="nav-count" id="recent-count">0</span></button>
+    <div class="nav-section"><span>我的分组</span><button class="icon-button" id="add-group" title="新建分组">＋</button></div>
+    <div class="group-list" id="group-list"></div>
+    <div class="sidebar-bottom">
+      <button class="nav-item" id="backup-tools"><span class="nav-icon">↥</span><span>备份与恢复</span></button>
+      <button class="nav-item" data-view="aliases"><span class="nav-icon">⌕</span><span>同义词集群</span></button>
+      <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span>设置</span></button>
+      <div class="local-note"><span class="status-dot"></span><span>数据仅保存在本机</span></div>
+    </div>
+  </aside>
+  <main class="main-shell">
+    <header class="topbar">
+      <div class="breadcrumbs"><span>仓库</span><i>/</i><strong id="crumb-current">全部质粒</strong></div>
+      <div class="top-actions"><span class="local-pill"><span class="status-dot"></span>本机模式</span><button id="choose-storage" class="button button-quiet">⚙ <span>存储位置</span></button><button id="import-plasmids" class="button button-gold">＋ <span>导入质粒</span></button></div>
+    </header>
+    <section id="library-view" class="view">
+      <div class="page-heading"><div><p class="eyebrow">PLASMID COLLECTION</p><h1 id="page-title">全部质粒</h1><p class="subtitle">导入文件存放于：<span id="repo-path">读取中…</span></p></div><div class="heading-controls"><button class="button" id="bulk-export">⇩ 批量导出</button><button class="button button-gold hidden" id="add-to-group">＋ 从全部质粒添加</button><div class="heading-stat"><span id="stat-count">0</span><small>个质粒</small></div></div></div>
+      <div class="workspace-grid">
+        <section class="list-panel glass-panel">
+          <div class="list-toolbar"><label class="search-box"><span>⌕</span><input id="search" placeholder="搜索文件名、feature 或同义词…" autocomplete="off"/><kbd>Enter</kbd></label><label class="sort-control"><span>排序</span><select id="sort-order" aria-label="质粒列表排序"><option value="name_asc">文件名 A→Z</option><option value="name_desc">文件名 Z→A</option><option value="import_new">最近导入</option><option value="import_old">最早导入</option><option value="size_large">文件最大优先</option><option value="size_small">文件最小优先</option></select></label></div>
+          <div class="search-hint" id="search-hint"><label class="search-scope"><input id="search-details" type="checkbox" checked/><span>包含 Feature 与备注</span></label><span>关闭后仅搜索文件名；同义词集群仍生效</span></div>
+          <div class="plasmid-list" id="plasmid-list"><div class="loading">读取质粒索引…</div></div>
+          <div class="list-footer"><span id="result-count">0 个结果</span><span>DNA 原件不会被修改</span></div>
+        </section>
+        <section class="detail-panel glass-panel" id="detail-panel"><div class="empty-detail"><div class="empty-orbit"><span>⌁</span></div><h2>选择一个质粒</h2><p>预览环状图谱、feature 坐标与注释</p></div></section>
+      </div>
+    </section>
+    <section id="aliases-view" class="view hidden">
+      <div class="page-heading"><div><p class="eyebrow">SEARCH VOCABULARY</p><h1>同义词集群</h1><p class="subtitle">同一集群内的所有词互为同义词，搜索任意一个即可匹配其他词。</p></div></div>
+      <div class="vocabulary-card glass-panel"><form id="cluster-form" class="cluster-form"><label>集群中的词（用逗号或换行分隔，至少两个）<textarea name="terms" rows="3" placeholder="例如 ITPR1，IP3R1，IP3 receptor type 1" required></textarea></label><button class="button button-gold" type="submit">创建集群</button></form><p class="cluster-hint">输入已有集群中的词会将相关集群合并。</p><div id="cluster-list"></div></div>
+    </section>
+    <section id="settings-view" class="view hidden">
+      <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="subtitle">按自己的习惯调整 Plasmora。</p></div></div>
+      <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>关闭窗口时</h2><p>选择点击窗口右上角关闭按钮后的行为。</p></div></div><div class="settings-options" id="close-behavior-options"><label><input type="radio" name="close-behavior" value="ask"/><span><strong>每次询问</strong><small>关闭时选择最小化到托盘或直接退出</small></span></label><label><input type="radio" name="close-behavior" value="tray"/><span><strong>最小化到托盘</strong><small>继续在系统托盘运行，双击图标可重新打开</small></span></label><label><input type="radio" name="close-behavior" value="quit"/><span><strong>直接关闭</strong><small>退出 Plasmora</small></span></label></div></div>
+      <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>装扮选择</h2><p>选择界面配色，设置会保存在这台电脑上。</p></div></div><div class="theme-grid" id="theme-grid"></div></div>
+    </section>
+    <footer>Plasmora · 离线单人版 <span>数据库和导入文件保存在本机</span></footer>
+  </main>
+  <div class="drop-overlay hidden" id="drop-overlay" aria-hidden="true"><div class="drop-overlay-card"><strong id="drop-overlay-title">释放以导入质粒</strong><span>支持一个或多个 SnapGene .dna 文件</span></div></div>
+  <div class="toast" id="toast"></div>
+  <div class="context-menu hidden" id="context-menu" role="menu" aria-label="快捷操作"></div>
+  <div class="modal-backdrop hidden" id="modal"><div class="modal glass-panel"><button class="icon-button close-modal" id="close-modal">×</button><p class="eyebrow">NEW COLLECTION</p><h2>新建分组</h2><p class="subtitle">同一个质粒可以加入多个分组。</p><form id="group-form"><input name="name" placeholder="分组名称" maxlength="40" required /><button class="button button-gold" type="submit">创建分组</button></form></div></div>
+  <div class="modal-backdrop hidden" id="action-modal"><div class="modal action-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="action-title"><button class="icon-button close-modal" id="close-action" aria-label="关闭">×</button><p class="eyebrow" id="action-eyebrow">操作</p><h2 id="action-title"></h2><p class="subtitle" id="action-subtitle"></p><div id="action-content"></div></div></div>
+  <div class="modal-backdrop hidden" id="import-conflict-modal"><div class="modal action-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="import-conflict-title"><button class="icon-button close-modal" id="close-import-conflict" aria-label="停止导入">×</button><p class="eyebrow">NAME CONFLICT</p><h2 id="import-conflict-title">发现同名质粒</h2><p class="subtitle" id="import-conflict-progress"></p><div id="import-conflict-content"></div></div></div>
+  <div class="modal-backdrop hidden" id="close-choice-modal"><div class="modal action-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="close-choice-title"><p class="eyebrow">CLOSE PLASMORA</p><h2 id="close-choice-title">关闭窗口</h2><p class="subtitle">希望 Plasmora 接下来怎么运行？</p><label class="close-remember"><input type="checkbox" id="remember-close-choice"/><span>记住我的选择，不再提示</span></label><div class="dialog-buttons"><button class="button" id="cancel-close-choice" type="button">取消</button><button class="button" id="close-to-tray" type="button">最小化到托盘</button><button class="button button-gold" id="close-quit" type="button">直接关闭</button></div></div></div>
+  <script src="app.js"></script>
+</body>
+</html>

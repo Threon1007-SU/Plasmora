@@ -1,0 +1,23 @@
+# Local research data and backups
+*.dna
+*.plasmora
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+
+# Credentials and local settings
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python and packaging outputs
+__pycache__/
+*.py[cod]
+build/
+dist/
+release/
+*.spec

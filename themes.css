@@ -1,0 +1,44 @@
+:root{--theme-bg:#0b1322;--theme-panel:rgba(19,30,48,.82);--theme-accent:#e4b863;--theme-text:#edf3fb;--theme-muted:#92a2b8;--theme-line:rgba(210,225,246,.12);--theme-well:rgba(93,127,172,.19);--theme-well-2:rgba(41,72,111,.2);--accent:var(--theme-accent)}
+:root[data-theme="ocean"]{--theme-bg:#091724;--theme-panel:rgba(16,43,60,.86);--theme-accent:#72c6dc;--theme-text:#edf8fb;--theme-muted:#9bb9c3;--theme-line:rgba(188,226,236,.15);--theme-well:rgba(40,132,163,.24);--theme-well-2:rgba(31,78,111,.25)}
+:root[data-theme="forest"]{--theme-bg:#101b1b;--theme-panel:rgba(27,48,45,.88);--theme-accent:#91c3a2;--theme-text:#eef7f0;--theme-muted:#a2b7aa;--theme-line:rgba(202,232,211,.15);--theme-well:rgba(61,118,90,.24);--theme-well-2:rgba(41,79,63,.25)}
+:root[data-theme="violet"]{--theme-bg:#171522;--theme-panel:rgba(39,36,58,.88);--theme-accent:#b7a5e8;--theme-text:#f2eff9;--theme-muted:#b1abc3;--theme-line:rgba(222,213,244,.15);--theme-well:rgba(106,91,154,.22);--theme-well-2:rgba(63,55,99,.25)}
+:root[data-theme="amber"]{--theme-bg:#1b1711;--theme-panel:rgba(48,38,26,.9);--theme-accent:#e9b45f;--theme-text:#fbf4e8;--theme-muted:#c2b39b;--theme-line:rgba(242,221,190,.16);--theme-well:rgba(157,108,47,.22);--theme-well-2:rgba(98,70,36,.24)}
+:root[data-theme="paper"]{color-scheme:light;--theme-bg:#eef2f5;--theme-panel:rgba(255,255,255,.88);--theme-accent:#347aa5;--theme-text:#172430;--theme-muted:#5e6c76;--theme-line:rgba(48,73,91,.16);--theme-well:rgba(93,150,185,.16);--theme-well-2:rgba(124,167,149,.15)}
+html[data-theme]{color-scheme:dark}html[data-theme="paper"]{color-scheme:light}
+html[data-theme] body{color:var(--theme-text);background:radial-gradient(720px circle at 83% 4%,var(--theme-well),transparent 62%),radial-gradient(600px circle at 16% 88%,var(--theme-well-2),transparent 66%),var(--theme-bg)}
+html[data-theme] .sidebar{background:color-mix(in srgb,var(--theme-bg) 84%,transparent);border-color:var(--theme-line)}
+html[data-theme] .topbar,html[data-theme] .detail-section{border-color:var(--theme-line)}
+html[data-theme] .glass-panel{background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018)),var(--theme-panel);border-color:var(--theme-line)}
+html[data-theme] .brand-mark{border-color:color-mix(in srgb,var(--theme-accent) 45%,transparent);background:color-mix(in srgb,var(--theme-accent) 9%,transparent)}
+html[data-theme] .brand-mark svg,html[data-theme] .button-gold,html[data-theme] .alias-canonical{color:var(--theme-accent)}
+html[data-theme] .brand-mark svg{stroke:var(--theme-accent)}
+html[data-theme] .nav-item.active{background:color-mix(in srgb,var(--theme-accent) 12%,transparent);box-shadow:inset 2px 0 var(--theme-accent)}
+html[data-theme] .button-gold{border-color:color-mix(in srgb,var(--theme-accent) 45%,transparent);background:color-mix(in srgb,var(--theme-accent) 14%,transparent)}
+html[data-theme] .plasmid-card.selected{border-color:color-mix(in srgb,var(--theme-accent) 50%,transparent)}
+html[data-theme] .plasmid-id,html[data-theme] .tag-chip.primary,html[data-theme] .map-center-title{color:var(--theme-accent)}
+html[data-theme] .section-title,html[data-theme] .detail-head h2,html[data-theme] .page-heading h1{color:var(--theme-text)}
+html[data-theme] .subtitle,html[data-theme] .detail-sub,html[data-theme] .search-hint,html[data-theme] .feature-kind,html[data-theme] .no-results,html[data-theme] .loading{color:var(--theme-muted)}
+html[data-theme="paper"] .sidebar{background:rgba(255,255,255,.82)}
+html[data-theme="paper"] .glass-panel{background:rgba(255,255,255,.88);box-shadow:0 12px 30px rgba(22,43,58,.08),inset 0 1px rgba(255,255,255,.9)}
+html[data-theme="paper"] .nav-item,html[data-theme="paper"] .group-row,html[data-theme="paper"] .button,html[data-theme="paper"] .local-pill,html[data-theme="paper"] .breadcrumbs,html[data-theme="paper"] .plasmid-name,html[data-theme="paper"] .feature-label,html[data-theme="paper"] .feature-row,html[data-theme="paper"] .alias-row,html[data-theme="paper"] .section-title{color:#263947}
+html[data-theme="paper"] .nav-item.active{color:#1d4c68;background:rgba(52,122,165,.1)}
+html[data-theme="paper"] .search-box,html[data-theme="paper"] .feature-search,html[data-theme="paper"] .alias-form input,html[data-theme="paper"] #group-form input{background:rgba(30,63,82,.055);border-color:rgba(30,63,82,.15);color:#172430}
+html[data-theme="paper"] .detail-sub,html[data-theme="paper"] .map-center-sub,html[data-theme="paper"] .feature-range{color:#617481}
+html[data-theme="paper"] .map-inner{fill:rgba(37,83,108,.04);stroke:rgba(37,83,108,.16)}
+html[data-theme="paper"] .map-ring{stroke:rgba(37,83,108,.15)}
+html[data-theme="paper"] .map-center-title{fill:#21465d}
+html[data-theme="paper"] .map-center-sub{fill:#587181}
+html[data-theme="paper"] .feature-detail{background:#f0f5f8;border-color:#cbd8e0;color:#30495a}
+html[data-theme="paper"] .feature-detail strong{color:#173a50}
+.theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;max-width:1050px}
+.theme-card{min-height:145px;text-align:left;padding:18px;border-radius:15px;border:1px solid var(--theme-line);background:var(--theme-panel);color:var(--theme-text);display:flex;flex-direction:column;align-items:flex-start;gap:8px;cursor:pointer;transition:border-color .16s,transform .16s,box-shadow .16s}
+.theme-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(3,7,18,.22)}
+.theme-card.active{border-color:var(--theme-accent);box-shadow:inset 0 0 0 1px var(--theme-accent)}
+.theme-swatches{display:flex;width:100%;height:34px;overflow:hidden;border-radius:8px;margin-bottom:4px}
+.theme-swatches i{flex:1}
+.theme-card strong{font-size:13px;font-weight:600}
+.theme-card small{font-size:11px;color:var(--theme-muted)}
+.theme-selected{margin-top:auto;font-size:10px;color:var(--theme-accent)}
+@media(max-width:780px){.theme-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.theme-card{padding:12px;min-height:135px}}
+html[data-theme] .brand-mark{border:0;background:transparent;box-shadow:none}
+.brand-mark img{display:block;width:38px;height:38px;object-fit:contain}
