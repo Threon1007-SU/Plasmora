@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -100,7 +101,7 @@ class ArchiveTest(unittest.TestCase):
     def test_single_file_export_preserves_managed_copy(self):
         destination = Path(self.temp.name) / "exported.dna"
         result = server.export_one_plasmid(1, destination)
-        self.assertEqual(result["path"], str(destination))
+        self.assertTrue(os.path.samefile(result["path"], destination))
         self.assertEqual(destination.read_bytes(), b"first plasmid")
         self.assertEqual(self.files[0].read_bytes(), b"first plasmid")
         with self.assertRaisesRegex(ValueError, "不能覆盖仓库"):

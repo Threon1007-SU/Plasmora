@@ -91,3 +91,7 @@ CSV 清单记录仓库编号、导出文件名、质粒名称、文件大小、�
 ## 许可证
 
 本项目采用 [MIT 许可证](LICENSE)。
+
+## 开发流程
+
+日常开发从 `develop` 创建短期分支，通过 Pull Request 和 CI 合并；`main` 仅用于稳定发布。具体规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
