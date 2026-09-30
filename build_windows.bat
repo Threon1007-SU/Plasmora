@@ -5,7 +5,7 @@ cd /d "%~dp0"
 py -3.12 make_icon.py
 if errorlevel 1 exit /b 1
 
-py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name Plasmora --icon app-icon.ico --collect-all webview --add-data "index.html;." --add-data "app.js;." --add-data "styles.css;." --add-data "compat.css;." --add-data "themes.css;." --add-data "app-icon.png;." desktop.py
+py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name Plasmora --icon app-icon.ico --collect-all webview --add-data "index.html;." --add-data "app.js;." --add-data "enhancements.js;." --add-data "styles.css;." --add-data "compat.css;." --add-data "themes.css;." --add-data "app-icon.png;." desktop.py
 if errorlevel 1 exit /b 1
 
 set "ISCC="

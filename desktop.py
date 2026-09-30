@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+import ctypes
 import os
 import json
 import shutil
 import subprocess
 import tempfile
 import time
+import webbrowser
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +26,43 @@ class DesktopApi:
         self._pending_import = None
         self._import_lock = threading.RLock()
         self._tray_controller = None
+        self._operation_cancel = threading.Event()
+        self._operation_lock = threading.RLock()
+
+    def _emit_progress(self, update):
+        if not self._window:
+            return
+        try:
+            self._window.evaluate_js(f"window.plasmoraProgress({json.dumps(update, ensure_ascii=True)})")
+        except Exception:
+            server.LOGGER.exception("无法更新操作进度")
+
+    def _run_operation(self, kind, action):
+        with self._operation_lock:
+            self._operation_cancel.clear()
+            self._emit_progress({"phase": kind, "current": 0, "total": 0, "message": "正在准备…"})
+            try:
+                return action(self._emit_progress, self._operation_cancel.is_set)
+            except server.OperationCancelled:
+                return {"cancelled": True}
+            finally:
+                self._emit_progress({"phase": "done", "current": 0, "total": 0, "message": ""})
+
+    def cancel_operation(self):
+        self._operation_cancel.set()
+        return {"ok": True}
+
+    def open_log_folder(self):
+        server.LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(server.LOG_PATH.parent))
+        return {"ok": True}
+
+    def open_project_page(self):
+        webbrowser.open(server.PROJECT_URL)
+        return {"ok": True}
+
+    def sync_repository(self):
+        return self._run_operation("sync", server.sync_changed_plasmids)
 
     def start_file_drag(self, plasmid_id):
         """Offer the managed DNA file to Explorer as a copy-only shell drag."""
@@ -81,9 +120,13 @@ class DesktopApi:
         if not folders:
             return {"cancelled": True}
         try:
-            result = server.set_storage_directory(folders[0])
+            result = self._run_operation("move", lambda progress, cancel:
+                                         server.set_storage_directory(folders[0], progress, cancel))
+            if result.get("cancelled"):
+                return result
             return {"cancelled": False, **result, "count": len(server.get_plasmids())}
         except Exception as exc:
+            server.LOGGER.exception("迁移仓库失败")
             return {"cancelled": False, "error": str(exc)}
 
     def import_plasmids(self):
@@ -106,6 +149,7 @@ class DesktopApi:
         with self._import_lock:
             if self._pending_import is not None:
                 return {"error": "请先处理当前的同名文件选择"}
+            self._operation_cancel.clear()
             if group_id is not None:
                 if type(group_id) is not int or group_id <= 0:
                     return {"error": "目标分组无效"}
@@ -124,6 +168,7 @@ class DesktopApi:
     def _finish_import(self, cancelled_remaining=False):
         session = self._pending_import
         self._pending_import = None
+        self._emit_progress({"phase": "done", "current": 0, "total": 0, "message": ""})
         results = session["imported"] + session["duplicates"] + session["skipped"] + session["replaced"]
         return {"imported": session["imported"], "duplicates": session["duplicates"],
                 "skipped": session["skipped"], "replaced": session["replaced"],
@@ -141,10 +186,15 @@ class DesktopApi:
                 return {"error": str(exc)}
             session["index"] += 1
         while session["index"] < len(session["paths"]):
+            if self._operation_cancel.is_set():
+                return self._finish_import(cancelled_remaining=True)
+            self._emit_progress({"phase": "import", "current": session["index"],
+                                 "total": len(session["paths"]), "message": Path(session["paths"][session["index"]]).name})
             path = session["paths"][session["index"]]
             try:
                 conflict = server.inspect_import_conflict(path)
                 if conflict:
+                    self._emit_progress({"phase": "done", "current": 0, "total": 0, "message": ""})
                     return {"pending": True, "conflict": conflict,
                             "position": session["index"] + 1, "total": len(session["paths"])}
                 self._record_import(server.import_one(path, session["groupId"]))
@@ -162,6 +212,7 @@ class DesktopApi:
             return self._advance_import(action, existing_id)
 
     def cancel_import(self):
+        self._operation_cancel.set()
         with self._import_lock:
             if self._pending_import is None:
                 return {"cancelled": True}
@@ -177,8 +228,10 @@ class DesktopApi:
         if not selected:
             return {"cancelled": True}
         try:
-            return server.backup_library(selected[0])
+            return self._run_operation("backup", lambda progress, cancel:
+                                       server.backup_library(selected[0], progress, cancel))
         except Exception as exc:
+            server.LOGGER.exception("备份仓库失败")
             return {"error": str(exc)}
 
     def choose_backup_for_restore(self):
@@ -198,14 +251,33 @@ class DesktopApi:
         except Exception as exc:
             return {"error": str(exc)}
 
+    def choose_rollback_for_restore(self, name):
+        self._pending_restore = None
+        if not isinstance(name, str) or Path(name).name != name:
+            return {"error": "自动备份名称无效"}
+        path = server.LOCAL_DATA / "rollback" / name
+        if not path.is_file() or not name.startswith("Before-restore-") or path.suffix != ".plasmora":
+            return {"error": "找不到自动备份"}
+        try:
+            info = server.inspect_backup(path)
+            self._pending_restore = info["path"]
+            return info
+        except Exception as exc:
+            server.LOGGER.exception("检查自动备份失败")
+            return {"error": str(exc)}
+
     def restore_backup(self):
         if not self._pending_restore:
             return {"error": "请先选择并检查备份文件"}
         try:
-            result = server.restore_backup(self._pending_restore)
+            result = self._run_operation("restore", lambda progress, cancel:
+                                         server.restore_backup(self._pending_restore, progress, cancel))
+            if result.get("cancelled"):
+                return result
             self._pending_restore = None
             return result
         except Exception as exc:
+            server.LOGGER.exception("恢复仓库失败")
             return {"error": str(exc)}
 
     def export_plasmids(self, item_ids):
@@ -220,8 +292,10 @@ class DesktopApi:
         if not selected:
             return {"cancelled": True}
         try:
-            return server.export_plasmids(item_ids, selected[0])
+            return self._run_operation("export", lambda progress, cancel:
+                                       server.export_plasmids(item_ids, selected[0], progress, cancel))
         except Exception as exc:
+            server.LOGGER.exception("批量导出失败")
             return {"error": str(exc)}
 
     def export_plasmid(self, plasmid_id):
@@ -374,7 +448,35 @@ class TrayController:
         self.window.native.BeginInvoke(Action(apply))
 
 
+def acquire_single_instance():
+    if os.name != "nt":
+        return None, True
+    kernel = ctypes.windll.kernel32
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.CreateMutexW(None, False, "Local\\PlasmoraDesktopMutex")
+    if not handle:
+        raise OSError("无法创建程序实例锁")
+    if kernel.GetLastError() == 183:
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        user32.FindWindowW.restype = ctypes.c_void_p
+        user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+        existing = user32.FindWindowW(None, "Plasmora")
+        if existing:
+            user32.ShowWindow(existing, 9)
+            user32.SetForegroundWindow(existing)
+        kernel.CloseHandle(handle)
+        return None, False
+    return handle, True
+
+
 def main():
+    mutex, is_first = acquire_single_instance()
+    if not is_first:
+        return
     # A previous session may have exited before its temporary drag source expired.
     for folder in Path(tempfile.gettempdir()).glob("plasmora-drag-*"):
         try:
@@ -406,6 +508,8 @@ def main():
     finally:
         httpd.shutdown()
         httpd.server_close()
+        if mutex:
+            ctypes.windll.kernel32.CloseHandle(mutex)
 
 
 if __name__ == "__main__":

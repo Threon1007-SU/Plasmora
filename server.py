@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ import zipfile
 from contextlib import closing, contextmanager
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -23,14 +25,42 @@ SOURCE_ROOT = Path(__file__).resolve().parent
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
+LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
+APP_VERSION = "0.7.0"
+PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
 DEFAULT_STORAGE = Path.home() / "Documents" / "Plasmora" / "原件"
 STORAGE_ROOT = DEFAULT_STORAGE
 LEGACY_ROOT = None
 LOCK = threading.RLock()
+LOGGER = logging.getLogger("plasmora")
 SORT_ORDERS = {"name_asc", "name_desc", "import_new", "import_old", "size_large", "size_small"}
 CLOSE_BEHAVIORS = {"ask", "tray", "quit"}
+
+
+def init_logging():
+    if LOGGER.handlers:
+        return
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(LOG_PATH, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+
+
+def report_progress(callback, phase, current, total, message=""):
+    if callback:
+        callback({"phase": phase, "current": current, "total": total, "message": message})
+
+
+class OperationCancelled(Exception):
+    pass
+
+
+def check_cancel(cancel):
+    if cancel and cancel():
+        raise OperationCancelled("操作已取消；已完成的步骤会保留")
 
 
 def get_close_behavior():
@@ -75,6 +105,137 @@ def db():
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def trash_db():
+    LOCAL_DATA.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(LOCAL_DATA / "trash.sqlite3", timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_trash():
+    (LOCAL_DATA / "Trash").mkdir(parents=True, exist_ok=True)
+    with trash_db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS trash_items (
+            id INTEGER PRIMARY KEY,
+            deleted_at TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            trash_path TEXT NOT NULL
+        )""")
+
+
+def _archive_plasmid(c, item_id, reason):
+    row = c.execute("SELECT * FROM library_plasmids WHERE id=?", (item_id,)).fetchone()
+    if not row:
+        raise FileNotFoundError("仓库中已没有这条质粒记录")
+    source = Path(row["storage_path"])
+    if not source.is_file():
+        raise FileNotFoundError("原件文件不存在，无法保留可恢复副本")
+    metadata = dict(row)
+    metadata["tags"] = [dict(tag) for tag in c.execute(
+        "SELECT tag,tag_kind FROM plasmid_tags WHERE plasmid_id=?", (item_id,))]
+    metadata["groups"] = [group[0] for group in c.execute(
+        "SELECT g.name FROM groups g JOIN plasmid_groups pg ON pg.group_id=g.id WHERE pg.plasmid_id=?", (item_id,))]
+    folder = LOCAL_DATA / "Trash"
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / f"{uuid4().hex}.dna"
+    try:
+        with source.open("rb") as original, destination.open("xb") as output:
+            digest, size = _copy_with_hash(original, output)
+        if digest != row["sha256"] or size != row["file_size"]:
+            raise ValueError("原件已在仓库外修改，请先同步后重试")
+        with trash_db() as trash:
+            entry_id = trash.execute(
+                "INSERT INTO trash_items(deleted_at,reason,metadata_json,trash_path) VALUES(?,?,?,?)",
+                (datetime.now().isoformat(timespec="seconds"), reason,
+                 json.dumps(metadata, ensure_ascii=False), str(destination)),
+            ).lastrowid
+        return entry_id, destination
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def get_trash():
+    init_trash()
+    with trash_db() as c:
+        rows = c.execute("SELECT id,deleted_at,reason,metadata_json FROM trash_items ORDER BY id DESC").fetchall()
+    return [{"id": row["id"], "deletedAt": row["deleted_at"], "reason": row["reason"],
+             "name": json.loads(row["metadata_json"])["file_name"]} for row in rows]
+
+
+def restore_trash(entry_id):
+    with LOCK:
+        with trash_db() as trash:
+            entry = trash.execute("SELECT * FROM trash_items WHERE id=?", (entry_id,)).fetchone()
+        if not entry:
+            raise FileNotFoundError("回收站中没有这条记录")
+        metadata = json.loads(entry["metadata_json"])
+        source = Path(entry["trash_path"])
+        if not source.is_file() or (LOCAL_DATA / "Trash").resolve() not in source.resolve().parents:
+            raise FileNotFoundError("回收站中的质粒文件不存在")
+        STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        with db() as c:
+            name = metadata["file_name"]
+            if c.execute("SELECT 1 FROM library_plasmids WHERE file_name=? COLLATE NOCASE", (name,)).fetchone():
+                name = _numbered_import_name(c, name)
+            stored_name = safe_storage_name(name, STORAGE_ROOT)
+            target = STORAGE_ROOT / stored_name
+            try:
+                with source.open("rb") as original, target.open("xb") as output:
+                    digest, size = _copy_with_hash(original, output)
+                if digest != metadata["sha256"] or size != metadata["file_size"]:
+                    raise ValueError("回收站文件校验失败")
+                old_id = metadata["id"]
+                reuse_id = not c.execute("SELECT 1 FROM library_plasmids WHERE id=?", (old_id,)).fetchone()
+                columns = "file_name,stored_name,storage_path,sha256,file_size,imported_at,note,favorite,last_viewed_at,file_mtime_ns"
+                values = (name, stored_name, str(target), digest, size, metadata["imported_at"],
+                          metadata.get("note", ""), metadata.get("favorite", 0),
+                          metadata.get("last_viewed_at"), target.stat().st_mtime_ns)
+                if reuse_id:
+                    item_id = c.execute(f"INSERT INTO library_plasmids(id,{columns}) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                        (old_id, *values)).lastrowid
+                else:
+                    item_id = c.execute(f"INSERT INTO library_plasmids({columns}) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                        values).lastrowid
+                c.executemany("INSERT INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
+                              [(item_id, tag["tag"], tag["tag_kind"]) for tag in metadata["tags"]])
+                for group_name in metadata["groups"]:
+                    group = c.execute("SELECT id FROM groups WHERE name=?", (group_name,)).fetchone()
+                    group_id = group["id"] if group else c.execute(
+                        "INSERT INTO groups(name,created_at) VALUES(?,?)",
+                        (group_name, datetime.now().isoformat(timespec="seconds"))).lastrowid
+                    c.execute("INSERT OR IGNORE INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)", (item_id, group_id))
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+        with trash_db() as trash:
+            trash.execute("DELETE FROM trash_items WHERE id=?", (entry_id,))
+        source.unlink(missing_ok=True)
+        return {"id": item_id, "name": name}
+
+
+def purge_trash(entry_id):
+    with LOCK, trash_db() as trash:
+        entry = trash.execute("SELECT trash_path FROM trash_items WHERE id=?", (entry_id,)).fetchone()
+        if not entry:
+            raise FileNotFoundError("回收站中没有这条记录")
+        path = Path(entry["trash_path"])
+        if (LOCAL_DATA / "Trash").resolve() not in path.resolve().parents:
+            raise ValueError("回收站路径无效")
+        if path.exists():
+            path.unlink()
+        trash.execute("DELETE FROM trash_items WHERE id=?", (entry_id,))
 
 
 def parse_dna(path: Path):
@@ -159,7 +320,8 @@ def init_db():
             imported_at TEXT NOT NULL,
             note TEXT NOT NULL DEFAULT '',
             favorite INTEGER NOT NULL DEFAULT 0,
-            last_viewed_at TEXT
+            last_viewed_at TEXT,
+            file_mtime_ns INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS plasmid_tags (
             plasmid_id INTEGER NOT NULL REFERENCES library_plasmids(id) ON DELETE CASCADE,
@@ -200,6 +362,8 @@ def init_db():
             c.execute("ALTER TABLE library_plasmids ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
         if "last_viewed_at" not in plasmid_columns:
             c.execute("ALTER TABLE library_plasmids ADD COLUMN last_viewed_at TEXT")
+        if "file_mtime_ns" not in plasmid_columns:
+            c.execute("ALTER TABLE library_plasmids ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0")
         migrate_plasmid_uniqueness(c)
         if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='aliases'").fetchone():
             for row in c.execute("SELECT canonical,alias FROM aliases").fetchall():
@@ -217,6 +381,8 @@ def init_db():
             STORAGE_ROOT = DEFAULT_STORAGE
             c.execute("INSERT INTO app_settings(key,value) VALUES('storage_dir',?)", (str(STORAGE_ROOT),))
     STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+    init_trash()
+    recover_storage_migration()
     migrate_legacy_database()
 
 
@@ -289,9 +455,10 @@ def migrate_plasmid_uniqueness(c):
                 imported_at TEXT NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
                 favorite INTEGER NOT NULL DEFAULT 0,
-                last_viewed_at TEXT
+                last_viewed_at TEXT,
+                file_mtime_ns INTEGER NOT NULL DEFAULT 0
             )""")
-            columns = "id,file_name,stored_name,storage_path,sha256,file_size,imported_at,note,favorite,last_viewed_at"
+            columns = "id,file_name,stored_name,storage_path,sha256,file_size,imported_at,note,favorite,last_viewed_at,file_mtime_ns"
             c.execute(f"INSERT INTO library_plasmids_new({columns}) SELECT {columns} FROM library_plasmids")
             c.execute("DROP TABLE library_plasmids")
             c.execute("ALTER TABLE library_plasmids_new RENAME TO library_plasmids")
@@ -349,17 +516,20 @@ def _replace_imported_plasmid(source, parsed, existing, group_id):
     temporary = Path(temporary_name)
     staged = target.with_name(f".plasmora-original-{existing['id']}-{uuid4().hex}.tmp")
     old_staged = False
+    trash_id = None
     try:
         with os.fdopen(fd, "wb") as output, source.open("rb") as original:
             digest, size = _copy_with_hash(original, output)
         if digest != parsed["sha256"] or size != parsed["file_size"]:
             raise ValueError("导入文件在读取过程中发生变化，请重试")
+        with db() as c:
+            trash_id, _ = _archive_plasmid(c, existing["id"], "replaced")
         os.replace(target, staged)
         old_staged = True
         os.replace(temporary, target)
         with db() as c:
-            c.execute("UPDATE library_plasmids SET sha256=?,file_size=?,imported_at=? WHERE id=?",
-                      (digest, size, datetime.now().isoformat(timespec="seconds"), existing["id"]))
+            c.execute("UPDATE library_plasmids SET sha256=?,file_size=?,imported_at=?,file_mtime_ns=? WHERE id=?",
+                      (digest, size, datetime.now().isoformat(timespec="seconds"), target.stat().st_mtime_ns, existing["id"]))
             c.execute("DELETE FROM plasmid_tags WHERE plasmid_id=?", (existing["id"],))
             c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                           [(existing["id"], tag["tag"], tag["kind"]) for tag in parsed["tags"]])
@@ -369,7 +539,8 @@ def _replace_imported_plasmid(source, parsed, existing, group_id):
             staged.unlink(missing_ok=True)
         except OSError:
             pass
-        return {"id": existing["id"], "name": existing["file_name"], "replaced": True, "grouped": grouped}
+        return {"id": existing["id"], "name": existing["file_name"], "replaced": True, "grouped": grouped,
+                "trashId": trash_id}
     except Exception:
         if old_staged:
             target.unlink(missing_ok=True)
@@ -424,8 +595,9 @@ def import_one(source_path, group_id=None, on_conflict="copy", existing_id=None)
                     if created:
                         target.unlink(missing_ok=True)
                     return {"id": duplicate["id"], "name": duplicate["file_name"], "duplicate": True, "grouped": grouped}
-                cur = c.execute("INSERT INTO library_plasmids(file_name,stored_name,storage_path,sha256,file_size,imported_at) VALUES(?,?,?,?,?,?)",
-                                (name, stored_name, str(target), parsed["sha256"], parsed["file_size"], datetime.now().isoformat(timespec="seconds")))
+                cur = c.execute("INSERT INTO library_plasmids(file_name,stored_name,storage_path,sha256,file_size,imported_at,file_mtime_ns) VALUES(?,?,?,?,?,?,?)",
+                                (name, stored_name, str(target), parsed["sha256"], parsed["file_size"],
+                                 datetime.now().isoformat(timespec="seconds"), target.stat().st_mtime_ns))
                 item_id = cur.lastrowid
                 c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, t["tag"], t["kind"]) for t in parsed["tags"]])
@@ -470,6 +642,75 @@ def get_plasmids():
             "groups": [g[1] for g in groups.get(r["id"], [])],
             "groupIds": [g[0] for g in groups.get(r["id"], [])],
         } for r in rows]
+
+
+def sync_plasmid(item_id, parsed=None):
+    with LOCK:
+        with db() as c:
+            row = c.execute("SELECT id,file_name,storage_path,sha256,file_size,file_mtime_ns FROM library_plasmids WHERE id=?",
+                            (item_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("仓库中已没有这条质粒记录")
+        path = Path(row["storage_path"])
+        if not path.is_file():
+            raise FileNotFoundError("导入的原件文件不存在，请检查仓库目录")
+        parsed = parsed or parse_dna(path)
+        changed = parsed["sha256"] != row["sha256"] or parsed["file_size"] != row["file_size"]
+        with db() as c:
+            if changed:
+                duplicate = c.execute(
+                    "SELECT 1 FROM library_plasmids WHERE file_name=? COLLATE NOCASE AND sha256=? AND id<>?",
+                    (row["file_name"], parsed["sha256"], item_id),
+                ).fetchone()
+                if duplicate:
+                    raise ValueError("修改后的文件与仓库中的同名质粒完全相同，请先重命名其中一份")
+                c.execute("UPDATE library_plasmids SET sha256=?,file_size=?,file_mtime_ns=? WHERE id=?",
+                          (parsed["sha256"], parsed["file_size"], path.stat().st_mtime_ns, item_id))
+                c.execute("DELETE FROM plasmid_tags WHERE plasmid_id=?", (item_id,))
+                c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
+                              [(item_id, tag["tag"], tag["kind"]) for tag in parsed["tags"]])
+            else:
+                c.execute("UPDATE library_plasmids SET file_mtime_ns=? WHERE id=?",
+                          (path.stat().st_mtime_ns, item_id))
+        return parsed, changed
+
+
+def sync_plasmid_if_changed(item_id):
+    with db() as c:
+        row = c.execute("SELECT id,storage_path,sha256,file_size,file_mtime_ns FROM library_plasmids WHERE id=?",
+                        (item_id,)).fetchone()
+    if not row:
+        raise FileNotFoundError("仓库中已没有这条质粒记录")
+    path = Path(row["storage_path"])
+    stat = path.stat()
+    if stat.st_mtime_ns == row["file_mtime_ns"] and stat.st_size == row["file_size"]:
+        return False
+    if stat.st_size == row["file_size"]:
+        with path.open("rb") as source:
+            digest, _ = _copy_with_hash(source)
+        if digest == row["sha256"]:
+            with db() as c:
+                c.execute("UPDATE library_plasmids SET file_mtime_ns=? WHERE id=?", (stat.st_mtime_ns, item_id))
+            return False
+    _, changed = sync_plasmid(item_id)
+    return changed
+
+
+def sync_changed_plasmids(progress=None, cancel=None):
+    with LOCK, db() as c:
+        rows = c.execute("SELECT id,file_name,storage_path,sha256,file_size,file_mtime_ns FROM library_plasmids ORDER BY id").fetchall()
+    updated, errors = [], []
+    for index, row in enumerate(rows, 1):
+        check_cancel(cancel)
+        report_progress(progress, "sync", index - 1, len(rows), row["file_name"])
+        try:
+            if sync_plasmid_if_changed(row["id"]):
+                updated.append(row["id"])
+        except Exception as exc:
+            LOGGER.exception("同步质粒失败：%s", row["file_name"])
+            errors.append({"id": row["id"], "name": row["file_name"], "error": str(exc)})
+    report_progress(progress, "sync", len(rows), len(rows), "同步完成")
+    return {"updated": updated, "errors": errors, "checked": len(rows)}
 
 
 def managed_plasmid_path(item_id):
@@ -540,19 +781,14 @@ def delete_plasmid(item_id):
         # Only an imported copy inside the configured repository may be removed.
         if STORAGE_ROOT.resolve() not in path.resolve().parents:
             raise ValueError("原件路径不在当前仓库中，无法安全删除")
-        staged = None
-        if path.exists():
-            staged = path.with_name(f".plasmid-delete-{item_id}-{os.urandom(6).hex()}.tmp")
-            path.rename(staged)
+        with db() as c:
+            trash_id, _ = _archive_plasmid(c, item_id, "deleted")
+            c.execute("DELETE FROM library_plasmids WHERE id=?", (item_id,))
         try:
-            with db() as c:
-                c.execute("DELETE FROM library_plasmids WHERE id=?", (item_id,))
-        except Exception:
-            if staged is not None:
-                staged.rename(path)
-            raise
-        if staged is not None:
-            staged.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.exception("删除后清理原件失败：%s", path.name)
+        return {"trashId": trash_id}
 
 
 def preview_plasmid(item_id):
@@ -564,8 +800,9 @@ def preview_plasmid(item_id):
     if not path.is_file():
         raise FileNotFoundError("导入的原件文件不存在，请检查仓库目录")
     parsed = parse_dna(path)
+    _, changed = sync_plasmid(item_id, parsed)
     return {"id": item_id, "name": row["file_name"], "length": len(parsed["sequence"]),
-            "circular": parsed["circular"], "features": parsed["features"]}
+            "circular": parsed["circular"], "features": parsed["features"], "metadataChanged": changed}
 
 
 def _copy_with_hash(source, destination=None):
@@ -592,8 +829,12 @@ def _snapshot_database(target):
         source.backup(snapshot)
 
 
-def backup_library(destination):
+def backup_library(destination, progress=None, cancel=None):
     destination = Path(destination).with_suffix(".plasmora")
+    check_cancel(cancel)
+    synchronized = sync_changed_plasmids(progress, cancel)
+    if synchronized["errors"]:
+        raise ValueError(f"有 {len(synchronized['errors'])} 个质粒无法同步，请先检查原件后再备份")
     with LOCK, tempfile.TemporaryDirectory(prefix="plasmora-snapshot-") as work:
         snapshot_path = Path(work) / "library.sqlite3"
         _snapshot_database(snapshot_path)
@@ -607,7 +848,9 @@ def backup_library(destination):
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                 archive.write(snapshot_path, "library.sqlite3")
                 manifest["dbSha256"] = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-                for record in records:
+                for index, record in enumerate(records, 1):
+                    check_cancel(cancel)
+                    report_progress(progress, "backup", index - 1, len(records), "正在写入质粒原件")
                     path = Path(record["storage_path"])
                     if not path.is_file():
                         raise FileNotFoundError(f"备份失败，缺少质粒文件：{path}")
@@ -618,13 +861,15 @@ def backup_library(destination):
                         raise ValueError(f"备份失败，质粒文件与仓库记录不一致：{path.name}")
                     manifest["files"].append({"id": record["id"], "sha256": digest, "size": size})
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            check_cancel(cancel)
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
+    report_progress(progress, "backup", len(records), len(records), "备份完成")
     return {"path": str(destination), "count": len(manifest["files"])}
 
 
-def _verify_backup_archive(path, work, extract_files=False):
+def _verify_backup_archive(path, work, extract_files=False, progress=None, cancel=None):
     archive_path = Path(path).expanduser().resolve()
     if not archive_path.is_file():
         raise FileNotFoundError("找不到备份文件")
@@ -665,7 +910,9 @@ def _verify_backup_archive(path, work, extract_files=False):
         by_id = {item["id"]: item for item in files}
         if len(by_id) != len(files) or set(by_id) != {row["id"] for row in records}:
             raise ValueError("备份质粒清单与数据库不一致")
-        for record in records:
+        for index, record in enumerate(records, 1):
+            check_cancel(cancel)
+            report_progress(progress, "verify", index - 1, len(records), "正在校验备份")
             item = by_id[record["id"]]
             if item["sha256"] != record["sha256"] or item["size"] != record["file_size"]:
                 raise ValueError("备份质粒信息与数据库不一致")
@@ -690,29 +937,52 @@ def inspect_backup(path):
     return {"path": str(Path(path).resolve()), "count": len(records), "createdAt": manifest.get("createdAt", "")}
 
 
-def restore_backup(path):
+def list_rollback_backups():
+    folder = LOCAL_DATA / "rollback"
+    if not folder.is_dir():
+        return []
+    return [{"name": path.name, "size": path.stat().st_size}
+            for path in sorted(folder.glob("Before-restore-*.plasmora"), reverse=True) if path.is_file()]
+
+
+def restore_backup(path, progress=None, cancel=None):
     with LOCK, tempfile.TemporaryDirectory(prefix="plasmora-restore-", dir=LOCAL_DATA) as work:
-        manifest, records, snapshot_path = _verify_backup_archive(path, work, extract_files=True)
+        manifest, records, snapshot_path = _verify_backup_archive(path, work, extract_files=True,
+                                                                  progress=progress, cancel=cancel)
         with db() as c:
             old_paths = [Path(row["storage_path"]) for row in c.execute("SELECT storage_path FROM library_plasmids")]
+        rollback_path = None
+        if old_paths:
+            check_cancel(cancel)
+            rollback_dir = LOCAL_DATA / "rollback"
+            rollback_dir.mkdir(parents=True, exist_ok=True)
+            rollback_path = rollback_dir / f"Before-restore-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:6]}.plasmora"
+            backup_library(rollback_path, progress, cancel)
         STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         created_paths = []
         nonce = uuid4().hex[:8]
         try:
             with closing(sqlite3.connect(snapshot_path)) as restored:
-                for record in records:
+                columns = {row[1] for row in restored.execute("PRAGMA table_info(library_plasmids)")}
+                if "file_mtime_ns" not in columns:
+                    restored.execute("ALTER TABLE library_plasmids ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0")
+                for index, record in enumerate(records, 1):
+                    check_cancel(cancel)
+                    report_progress(progress, "restore", index - 1, len(records), "正在恢复质粒原件")
                     stored_name = f"Plasmora-{record['id']}-{record['sha256'][:12]}-{nonce}.dna"
                     target = STORAGE_ROOT / stored_name
                     with (Path(work) / f"{record['id']}.dna").open("rb") as source, target.open("xb") as output:
                         created_paths.append(target)
                         shutil.copyfileobj(source, output)
-                    restored.execute("UPDATE library_plasmids SET stored_name=?,storage_path=? WHERE id=?", (stored_name, str(target), record["id"]))
+                    restored.execute("UPDATE library_plasmids SET stored_name=?,storage_path=?,file_mtime_ns=? WHERE id=?",
+                                     (stored_name, str(target), target.stat().st_mtime_ns, record["id"]))
                 restored.execute("INSERT INTO app_settings(key,value) VALUES('storage_dir',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(STORAGE_ROOT),))
                 restored.commit()
                 migrate_plasmid_uniqueness(restored)
                 restored.commit()
                 if restored.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("恢复后的数据库完整性检查失败")
+            check_cancel(cancel)
             os.replace(snapshot_path, DB_PATH)
         except Exception:
             for target in created_paths:
@@ -725,12 +995,15 @@ def restore_backup(path):
                     path.unlink(missing_ok=True)
             except OSError:
                 pass
-    return {"ok": True, "count": len(records), "createdAt": manifest.get("createdAt", "")}
+    report_progress(progress, "restore", len(records), len(records), "恢复完成")
+    return {"ok": True, "count": len(records), "createdAt": manifest.get("createdAt", ""),
+            "rollbackPath": str(rollback_path) if rollback_path else None}
 
 
 def export_one_plasmid(item_id, destination):
     destination = Path(destination).expanduser().resolve().with_suffix(".dna")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    sync_plasmid_if_changed(item_id)
     with LOCK, db() as c:
         row = c.execute("SELECT file_name,storage_path,sha256,file_size FROM library_plasmids WHERE id=?", (item_id,)).fetchone()
         if not row:
@@ -755,10 +1028,14 @@ def export_one_plasmid(item_id, destination):
     return {"path": str(destination), "name": row["file_name"], "size": size}
 
 
-def export_plasmids(item_ids, destination):
+def export_plasmids(item_ids, destination, progress=None, cancel=None):
     if not isinstance(item_ids, list) or not item_ids or any(type(item) is not int for item in item_ids):
         raise ValueError("请至少选择一个质粒")
     ids = sorted(set(item_ids))
+    for index, item_id in enumerate(ids, 1):
+        check_cancel(cancel)
+        report_progress(progress, "export", index - 1, len(ids), "正在检查质粒原件")
+        sync_plasmid_if_changed(item_id)
     destination = Path(destination).with_suffix(".zip")
     with LOCK, db() as c:
         placeholders = ",".join("?" for _ in ids)
@@ -776,7 +1053,9 @@ def export_plasmids(item_ids, destination):
             used_names = set()
             csv_rows = []
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-                for row in rows:
+                for index, row in enumerate(rows, 1):
+                    check_cancel(cancel)
+                    report_progress(progress, "export", index - 1, len(rows), row["file_name"])
                     name = Path(row["file_name"]).name
                     stem, suffix = Path(name).stem, Path(name).suffix or ".dna"
                     export_name = name
@@ -801,13 +1080,41 @@ def export_plasmids(item_ids, destination):
                 writer.writerow(["仓库编号", "导出文件名", "质粒名称", "文件大小（字节）", "导入时间", "Feature 标签", "所属分组", "备注", "SHA-256"])
                 writer.writerows(csv_rows)
                 archive.writestr("质粒清单.csv", output.getvalue().encode("utf-8-sig"))
+            check_cancel(cancel)
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
+    report_progress(progress, "export", len(rows), len(rows), "导出完成")
     return {"path": str(destination), "count": len(rows)}
 
 
-def set_storage_directory(path):
+def _write_migration_journal(data):
+    journal = LOCAL_DATA / "storage-migration.json"
+    temporary = journal.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, journal)
+
+
+def recover_storage_migration():
+    journal = LOCAL_DATA / "storage-migration.json"
+    if not journal.is_file():
+        return
+    try:
+        data = json.loads(journal.read_text(encoding="utf-8"))
+        target_root = Path(data["target"]).resolve()
+        with db() as c:
+            referenced = {Path(row[0]).resolve() for row in c.execute("SELECT storage_path FROM library_plasmids")}
+        for name in data.get("created", []):
+            path = Path(name).resolve()
+            if target_root in path.parents and path not in referenced:
+                path.unlink(missing_ok=True)
+        journal.unlink()
+        LOGGER.info("已清理中断的存储迁移")
+    except Exception:
+        LOGGER.exception("无法清理中断的存储迁移")
+
+
+def set_storage_directory(path, progress=None, cancel=None):
     global STORAGE_ROOT
     target_dir = Path(path).expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -816,21 +1123,33 @@ def set_storage_directory(path):
         return {"path": str(target_dir), "moved": 0}
     with LOCK:
         with db() as c:
-            items = c.execute("SELECT id,stored_name,storage_path,sha256 FROM library_plasmids ORDER BY id").fetchall()
+            items = c.execute("SELECT id,stored_name,storage_path,sha256,file_size FROM library_plasmids ORDER BY id").fetchall()
+        required = sum(item["file_size"] for item in items) + 16 * 1024 * 1024
+        if items and shutil.disk_usage(target_dir).free < required:
+            raise OSError("目标磁盘空间不足，无法安全迁移整个仓库")
         moved_rows, created_paths = [], []
+        journal = {"target": str(target_dir), "created": []}
+        _write_migration_journal(journal)
         try:
-            for item in items:
+            for index, item in enumerate(items, 1):
+                check_cancel(cancel)
+                report_progress(progress, "move", index - 1, len(items), "正在迁移质粒原件")
                 old_path = Path(item["storage_path"])
                 if not old_path.is_file():
                     raise FileNotFoundError(f"找不到已导入文件：{old_path}")
                 name = safe_storage_name(item["stored_name"], target_dir)
                 new_path = target_dir / name
                 if old_path.resolve() != new_path.resolve() and not new_path.exists():
+                    journal["created"].append(str(new_path))
+                    _write_migration_journal(journal)
                     fd, temp_name = tempfile.mkstemp(prefix=".plasmid-move-", suffix=".tmp", dir=target_dir)
                     os.close(fd)
                     temp_path = Path(temp_name)
                     try:
-                        shutil.copy2(old_path, temp_path)
+                        with old_path.open("rb") as source, temp_path.open("wb") as output:
+                            digest, size = _copy_with_hash(source, output)
+                        if digest != item["sha256"] or size != item["file_size"]:
+                            raise ValueError(f"迁移校验失败：{old_path.name}")
                         os.replace(temp_path, new_path)
                     finally:
                         temp_path.unlink(missing_ok=True)
@@ -839,6 +1158,7 @@ def set_storage_directory(path):
                     # safe_storage_name should have selected a free name; guard against a race.
                     raise FileExistsError(f"目标文件已存在：{new_path}")
                 moved_rows.append((str(new_path), name, item["id"], old_path))
+            check_cancel(cancel)
             with db() as c:
                 c.executemany("UPDATE library_plasmids SET storage_path=?,stored_name=? WHERE id=?",
                               [(new_path, name, item_id) for new_path, name, item_id, _ in moved_rows])
@@ -847,6 +1167,7 @@ def set_storage_directory(path):
         except Exception:
             for created in created_paths:
                 created.unlink(missing_ok=True)
+            (LOCAL_DATA / "storage-migration.json").unlink(missing_ok=True)
             raise
         # Remove only managed copies still inside the old storage directory.
         for _, _, _, old_path in moved_rows:
@@ -855,6 +1176,8 @@ def set_storage_directory(path):
                     old_path.unlink(missing_ok=True)
             except OSError:
                 pass
+        (LOCAL_DATA / "storage-migration.json").unlink(missing_ok=True)
+    report_progress(progress, "move", len(items), len(items), "迁移完成")
     return {"path": str(target_dir), "moved": len(moved_rows)}
 
 
@@ -935,6 +1258,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"plasmids": get_plasmids()})
         elif route == "/api/storage":
             self.send_json({"path": str(STORAGE_ROOT)})
+        elif route == "/api/about":
+            self.send_json({"version": APP_VERSION, "projectUrl": PROJECT_URL,
+                            "license": "MIT", "logPath": str(LOG_PATH)})
+        elif route == "/api/trash":
+            self.send_json({"items": get_trash()})
+        elif route == "/api/rollback":
+            self.send_json({"items": list_rollback_backups()})
         elif route == "/api/settings/theme":
             with db() as c:
                 row = c.execute("SELECT value FROM app_settings WHERE key='theme'").fetchone()
@@ -977,7 +1307,7 @@ class Handler(SimpleHTTPRequestHandler):
                     shutil.copyfileobj(f, self.wfile)
             except Exception:
                 self.send_error(404)
-        elif route in ("/", "/index.html", "/app.js", "/styles.css", "/compat.css", "/themes.css", "/app-icon.png"):
+        elif route in ("/", "/index.html", "/app.js", "/enhancements.js", "/styles.css", "/compat.css", "/themes.css", "/app-icon.png"):
             super().do_GET()
         else:
             self.send_error(404)
@@ -1011,6 +1341,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True, "sort": sort_order})
             elif route == "/api/settings/close_behavior":
                 self.send_json({"ok": True, "behavior": set_close_behavior(data.get("behavior"))})
+            elif route == "/api/sync":
+                self.send_json(sync_changed_plasmids())
+            elif re.fullmatch(r"/api/trash/\d+/restore", route):
+                self.send_json(restore_trash(int(route.split("/")[3])))
             elif re.fullmatch(r"/api/groups/\d+/members", route):
                 group_id = int(route.split("/")[3])
                 raw_ids = data.get("plasmid_ids")
@@ -1087,7 +1421,9 @@ class Handler(SimpleHTTPRequestHandler):
         route = urlparse(self.path).path
         try:
             if re.fullmatch(r"/api/plasmids/\d+", route):
-                delete_plasmid(int(route.rsplit("/", 1)[1]))
+                self.send_json({"ok": True, **delete_plasmid(int(route.rsplit("/", 1)[1]))})
+            elif re.fullmatch(r"/api/trash/\d+", route):
+                purge_trash(int(route.rsplit("/", 1)[1]))
                 self.send_json({"ok": True})
             elif route.startswith("/api/groups/") and "/plasmids/" in route:
                 parts = route.split("/")
@@ -1115,6 +1451,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def run_server():
+    init_logging()
     load_legacy_settings()
     init_db()
     return ThreadingHTTPServer(("127.0.0.1", 0), Handler)

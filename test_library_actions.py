@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -35,7 +36,7 @@ class LibraryActionsTest(unittest.TestCase):
         with server.db() as c:
             for name, path in (("first.dna", self.first), ("second.dna", self.second)):
                 c.execute("INSERT INTO library_plasmids(file_name,stored_name,storage_path,sha256,file_size,imported_at) VALUES(?,?,?,?,?,?)",
-                          (name, name, str(path), name, path.stat().st_size, "2026-09-27"))
+                          (name, name, str(path), hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size, "2026-09-27"))
             c.execute("INSERT INTO groups(name,created_at) VALUES('old group','2026-09-27')")
             c.execute("INSERT INTO plasmid_groups(plasmid_id,group_id) VALUES(1,1)")
         self.httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

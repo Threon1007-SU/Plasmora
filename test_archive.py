@@ -107,7 +107,7 @@ class ArchiveTest(unittest.TestCase):
             server.export_one_plasmid(1, self.files[1])
         self.assertEqual(self.files[1].read_bytes(), b"second plasmid")
         self.files[0].write_bytes(b"changed")
-        with self.assertRaisesRegex(ValueError, "不一致"):
+        with self.assertRaisesRegex(ValueError, "不是可识别|不一致"):
             server.export_one_plasmid(1, destination)
         self.assertEqual(destination.read_bytes(), b"first plasmid")
 
