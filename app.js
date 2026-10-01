@@ -4,7 +4,8 @@ const themes=[
   {id:'forest',name:'苔原森林',note:'松针绿 · 柔和鼠尾草',bg:'#101b1b',panel:'#1b302d',accent:'#91c3a2',text:'#eef7f0',muted:'#a2b7aa',swatches:['#101b1b','#477a64','#91c3a2']},
   {id:'violet',name:'暮色鸢尾',note:'石板紫 · 淡紫罗兰',bg:'#171522',panel:'#27243a',accent:'#b7a5e8',text:'#f2eff9',muted:'#b1abc3',swatches:['#171522','#7261a3','#b7a5e8']},
   {id:'amber',name:'琥珀实验室',note:'石墨黑 · 蜂蜜琥珀',bg:'#1b1711',panel:'#30261a',accent:'#e9b45f',text:'#fbf4e8',muted:'#c2b39b',swatches:['#1b1711','#986b32','#e9b45f']},
-  {id:'paper',name:'实验记录纸',note:'暖白 · 实验室蓝',bg:'#eef2f5',panel:'#ffffff',accent:'#347aa5',text:'#172430',muted:'#5e6c76',swatches:['#eef2f5','#347aa5','#77a78e']}
+  {id:'paper',name:'实验记录纸',note:'暖白 · 实验室蓝',bg:'#eef2f5',panel:'#ffffff',accent:'#347aa5',text:'#172430',muted:'#5e6c76',swatches:['#eef2f5','#347aa5','#77a78e']},
+  {id:'corporate-clean',name:'企业简洁风',note:'石板浅灰 · 专业蓝',bg:'#f8fafc',panel:'#ffffff',accent:'#2563eb',text:'#111827',muted:'#4b5563',swatches:['#f8fafc','#ffffff','#2563eb']}
 ];
 const state={plasmids:[],groups:[],synonymClusters:[],previews:{},noteDrafts:{},selected:null,view:'library',groupFilter:null,featureQuery:'',activeFeature:null,search:'',searchDetails:true,sortOrder:'name_asc',toastTimer:null,storage:null,theme:'nocturne',closeBehavior:'ask'};
 const $=s=>document.querySelector(s);
