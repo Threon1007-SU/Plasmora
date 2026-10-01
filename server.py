@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -1326,7 +1326,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif route == "/api/settings/theme":
                 theme = str(data.get("theme", "nocturne"))
-                if theme not in {"nocturne", "ocean", "forest", "violet", "amber", "paper"}:
+                if theme not in {"nocturne", "ocean", "forest", "violet", "amber", "paper", "corporate-clean"}:
                     self.send_json({"error": "未知的配色方案"}, 400)
                     return
                 with db() as c:
