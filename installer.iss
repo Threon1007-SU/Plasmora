@@ -56,9 +56,9 @@ var
   InstallGuard: THandle;
   ShutdownRequest: THandle;
 
-function CreateMutexW(Attributes: NativeUInt; InitialOwner: Boolean; Name: String): THandle;
+function CreateMutexW(Attributes: THandle; InitialOwner: Boolean; Name: String): THandle;
   external 'CreateMutexW@kernel32.dll stdcall';
-function CreateEventW(Attributes: NativeUInt; ManualReset, InitialState: Boolean; Name: String): THandle;
+function CreateEventW(Attributes: THandle; ManualReset, InitialState: Boolean; Name: String): THandle;
   external 'CreateEventW@kernel32.dll stdcall';
 function SetEvent(Handle: THandle): Boolean;
   external 'SetEvent@kernel32.dll stdcall';
@@ -66,7 +66,7 @@ function ResetEvent(Handle: THandle): Boolean;
   external 'ResetEvent@kernel32.dll stdcall';
 function CloseHandle(Handle: THandle): Boolean;
   external 'CloseHandle@kernel32.dll stdcall';
-function CreateFileW(Name: String; Access, ShareMode: Cardinal; Security: NativeUInt;
+function CreateFileW(Name: String; Access, ShareMode: Cardinal; Security: THandle;
   Creation, Flags: Cardinal; Template: THandle): THandle;
   external 'CreateFileW@kernel32.dll stdcall';
 
