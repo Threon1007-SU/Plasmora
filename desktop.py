@@ -17,6 +17,7 @@ import webview
 from webview.dom import DOMEventHandler
 
 import server
+from repository_watch import RepositoryWatcher
 
 
 class DesktopApi:
@@ -28,6 +29,7 @@ class DesktopApi:
         self._tray_controller = None
         self._operation_cancel = threading.Event()
         self._operation_lock = threading.RLock()
+        self._repository_watcher = None
 
     def _emit_progress(self, update):
         if not self._window:
@@ -63,6 +65,11 @@ class DesktopApi:
 
     def sync_repository(self):
         return self._run_operation("sync", server.sync_changed_plasmids)
+
+    def take_repository_updates(self):
+        if self._repository_watcher:
+            return self._repository_watcher.take_updates()
+        return {"updated": [], "errors": []}
 
     def start_file_drag(self, plasmid_id):
         """Offer the managed DNA file to Explorer as a copy-only shell drag."""
@@ -500,12 +507,16 @@ def main():
     api._window = window
     tray = TrayController(window)
     api._tray_controller = tray
+    watcher = RepositoryWatcher()
+    api._repository_watcher = watcher
     def on_ready():
         bind_file_drop(window, api)
         tray.install()
+        watcher.start()
     try:
         webview.start(on_ready, debug=False)
     finally:
+        watcher.stop()
         httpd.shutdown()
         httpd.server_close()
         if mutex:
