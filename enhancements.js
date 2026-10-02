@@ -97,6 +97,34 @@ async function receiveRepositoryUpdates() {
 }
 setInterval(receiveRepositoryUpdates, 2000);
 
+let preparingForUpdate = false;
+window.plasmoraCancelUpdate = () => {
+  document.body.inert = false;
+};
+window.plasmoraPrepareForUpdate = async () => {
+  if (preparingForUpdate ||
+      !document.querySelector('#operation-progress').classList.contains('hidden') ||
+      !document.querySelector('#import-conflict-modal').classList.contains('hidden')) return {ready: false};
+  preparingForUpdate = true;
+  document.body.inert = true;
+  try {
+    for (const [id, note] of Object.entries(state.noteDrafts)) {
+      // Deleted records can leave a draft in memory; they no longer need saving.
+      if (!state.plasmids.some(item => item.id === Number(id))) continue;
+      await api(`/api/plasmids/${id}/note`, {method: 'PATCH', body: JSON.stringify({note})});
+      delete state.noteDrafts[id];
+    }
+    toast('备注已保存，正在退出以安装更新…');
+    return {ready: true};
+  } catch (error) {
+    document.body.inert = false;
+    toast(`无法保存备注，暂未退出：${error.message}。处理后在安装器中点击重试。`);
+    return {ready: false, failed: true};
+  } finally {
+    preparingForUpdate = false;
+  }
+};
+
 async function showTrash() {
   try {
     const result = await api('/api/trash');

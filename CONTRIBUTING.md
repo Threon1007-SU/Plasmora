@@ -18,7 +18,7 @@ Plasmora 由单人维护，使用三个层级的分支：
 ## 发布版本
 
 1. 在 `develop` 更新版本号、README 和安装脚本，确认测试与安装包可用。
-2. 创建从 `develop` 到 `main` 的 Pull Request；CI 通过后合并。单人维护不要求额外审批。
+2. 从 `main` 创建 `codex/release-<版本>` 短期分支，应用 `develop` 中本次待发布的提交，确认两个分支的文件内容一致，再创建目标为 `main` 的 Pull Request；CI 通过后合并。这样可避免 Squash 合并造成的提交历史差异引起重复发布冲突。单人维护不要求额外审批。
 3. 从 `main` 的发布提交创建 `vX.Y.Z` 标签，并把对应安装包上传到 GitHub Releases。
 4. 将发布后的 `main` 通过 PR 同步回 `develop`（如两者已有相同改动，可跳过）。
 
