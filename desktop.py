@@ -18,6 +18,7 @@ from webview.dom import DOMEventHandler
 
 import server
 from repository_watch import RepositoryWatcher
+from installation import InstallerShutdown, installation_in_progress
 
 
 class DesktopApi:
@@ -30,6 +31,20 @@ class DesktopApi:
         self._operation_cancel = threading.Event()
         self._operation_lock = threading.RLock()
         self._repository_watcher = None
+        self._update_requested = threading.Event()
+
+    def ready_for_update(self):
+        if not self._operation_lock.acquire(blocking=False):
+            return False
+        try:
+            if not self._import_lock.acquire(blocking=False):
+                return False
+            try:
+                return self._pending_import is None
+            finally:
+                self._import_lock.release()
+        finally:
+            self._operation_lock.release()
 
     def _emit_progress(self, update):
         if not self._window:
@@ -41,6 +56,8 @@ class DesktopApi:
 
     def _run_operation(self, kind, action):
         with self._operation_lock:
+            if self._update_requested.is_set():
+                raise ValueError("正在准备更新程序，请等待安装完成")
             self._operation_cancel.clear()
             self._emit_progress({"phase": kind, "current": 0, "total": 0, "message": "正在准备…"})
             try:
@@ -154,6 +171,8 @@ class DesktopApi:
 
     def _begin_import(self, paths, group_id):
         with self._import_lock:
+            if self._update_requested.is_set():
+                return {"error": "正在准备更新程序，请等待安装完成"}
             if self._pending_import is not None:
                 return {"error": "请先处理当前的同名文件选择"}
             self._operation_cancel.clear()
@@ -481,8 +500,13 @@ def acquire_single_instance():
 
 
 def main():
+    if installation_in_progress():
+        return
     mutex, is_first = acquire_single_instance()
     if not is_first:
+        return
+    if installation_in_progress():
+        ctypes.windll.kernel32.CloseHandle(mutex)
         return
     # A previous session may have exited before its temporary drag source expired.
     for folder in Path(tempfile.gettempdir()).glob("plasmora-drag-*"):
@@ -509,13 +533,16 @@ def main():
     api._tray_controller = tray
     watcher = RepositoryWatcher()
     api._repository_watcher = watcher
+    updater = InstallerShutdown(api)
     def on_ready():
         bind_file_drop(window, api)
         tray.install()
         watcher.start()
+        updater.start()
     try:
         webview.start(on_ready, debug=False)
     finally:
+        updater.stop()
         watcher.stop()
         httpd.shutdown()
         httpd.server_close()

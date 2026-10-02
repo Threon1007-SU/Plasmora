@@ -23,7 +23,9 @@ Plasmora 是供单人在 Windows 本机使用的质粒管理程序。它把导�
 
 ### 使用 Windows 安装包
 
-从 [GitHub Releases](https://github.com/Threon1007-SU/Plasmora/releases) 获取 `Plasmora-Setup-0.7.2.exe`，运行后按向导完成安装，再从桌面或开始菜单启动 **Plasmora**。安装包面向 64 位 Windows。需要自行构建时，请先按下文安装依赖，再安装 Inno Setup 6 或 7，在项目根目录运行 `build_windows.bat`。生成的安装包位于 `release` 目录。
+从 [GitHub Releases](https://github.com/Threon1007-SU/Plasmora/releases) 获取 `Plasmora-Setup-0.7.3.exe`，运行后按向导完成安装，再从桌面或开始菜单启动 **Plasmora**。安装包面向 64 位 Windows。需要自行构建时，请先按下文安装依赖，再安装 Inno Setup 6 或 7，在项目根目录运行 `build_windows.bat`。生成的安装包位于 `release` 目录。
+
+更新安装会先请求运行中的程序安全退出：等待导入、备份、恢复或迁移完成，保存尚未保存的备注，然后退出。程序退出及文件释放前，安装器不会覆盖程序文件；等待期间可重试或取消安装。从 **0.7.2 或更早版本** 首次更新时，旧版尚不支持该退出请求，请先保存备注，在任务栏托盘右键图标选择“退出 Plasmora”，再继续安装。关闭窗口可能只是最小化到托盘。取消更新后，可继续使用原程序。
 
 ### 从源码启动
 
