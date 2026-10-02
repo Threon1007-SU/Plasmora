@@ -38,7 +38,19 @@ document.querySelector('#cancel-operation').onclick = async () => {
 };
 
 let syncingRepository = false;
-let lastRepositorySync = 0;
+async function applyRepositoryUpdates(result, automatic = false) {
+  if (result.updated.length) {
+    for (const id of result.updated) delete state.previews[id];
+    await loadPlasmids();
+    renderList();
+    if (result.updated.includes(state.selected)) {
+      state.activeFeature = null;
+      renderDetail();
+    }
+    toast(`${automatic ? '已自动同步' : '已同步'} ${result.updated.length} 个外部修改的质粒`);
+  }
+  if (result.errors.length) toast(`${result.errors.length} 项无法同步，请查看日志或手动同步仓库`);
+}
 async function syncRepository(quiet = false) {
   if (syncingRepository || !window.pywebview?.api?.sync_repository) {
     if (!quiet) toast('请在桌面程序中同步仓库');
@@ -52,34 +64,38 @@ async function syncRepository(quiet = false) {
       return;
     }
     if (result.error) throw new Error(result.error);
-    if (result.updated.length) {
-      for (const id of result.updated) delete state.previews[id];
-      await loadPlasmids();
-      render();
-      toast(`已同步 ${result.updated.length} 个外部修改的质粒`);
-    } else if (!quiet) {
+    await applyRepositoryUpdates(result);
+    if (!result.updated.length && !result.errors.length && !quiet) {
       toast('仓库记录已是最新');
     }
-    if (result.errors.length) toast(`${result.errors.length} 个原件无法同步，请查看日志`);
   } catch (error) {
     toast(error.message);
   } finally {
     syncingRepository = false;
-    lastRepositorySync = Date.now();
   }
 }
 
 document.querySelector('#sync-repository').onclick = () => syncRepository();
-let hasSeenFocus = document.hasFocus();
-window.addEventListener('focus', () => {
-  if (!hasSeenFocus) {
-    hasSeenFocus = true;
-    return;
-  }
-  if (Date.now() - lastRepositorySync < 3000 ||
+let receivingRepositoryUpdates = false;
+let repositoryUpdateError = false;
+async function receiveRepositoryUpdates() {
+  if (receivingRepositoryUpdates || syncingRepository || !state.storage ||
+      !window.pywebview?.api?.take_repository_updates ||
       !document.querySelector('#operation-progress').classList.contains('hidden')) return;
-  syncRepository(true);
-});
+  receivingRepositoryUpdates = true;
+  try {
+    // Drain completed notifications only; this call never scans or parses files.
+    const result = await window.pywebview.api.take_repository_updates();
+    await applyRepositoryUpdates(result, true);
+    repositoryUpdateError = false;
+  } catch (error) {
+    if (!repositoryUpdateError) toast('无法接收仓库更新，请手动同步仓库');
+    repositoryUpdateError = true;
+  } finally {
+    receivingRepositoryUpdates = false;
+  }
+}
+setInterval(receiveRepositoryUpdates, 2000);
 
 async function showTrash() {
   try {

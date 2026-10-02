@@ -36,3 +36,54 @@ state.view = 'recent';
 assert.deepEqual(Array.from(sortedPlasmids(filtered()), p => p.id), [2, 1]);
 assert.equal(dragExportDescriptor({id: 7, name: 'JH:sample.dna'}, 'http://127.0.0.1:1234'), 'application/octet-stream:JH_sample.dna:http://127.0.0.1:1234/api/file/7');
 console.log('Frontend search scopes and collections: OK');
+
+async function verifyBackgroundRepositoryUpdates() {
+  const listeners = [];
+  const timers = [];
+  const messages = [];
+  let manualSyncs = 0, notifications = {updated: [], errors: []};
+  let listRenders = 0, detailRenders = 0, progressHidden = true;
+  const elements = new Map();
+  const backgroundState = {storage: {}, selected: 2, activeFeature: 3,
+    previews: {1: {cached: true}, 2: {cached: true}}, noteDrafts: {2: 'unsaved note'}};
+  const background = {
+    window: {addEventListener: (event, handler) => listeners.push([event, handler]), pywebview: {api: {
+      sync_repository: async () => {manualSyncs++; return {updated: [], errors: []};},
+      take_repository_updates: async () => notifications,
+    }}},
+    document: {querySelector: selector => {
+      if (!elements.has(selector)) elements.set(selector, {classList: {contains: () => progressHidden}});
+      return elements.get(selector);
+    }},
+    state: backgroundState, toast: message => messages.push(message),
+    loadPlasmids: async () => {}, renderList: () => listRenders++, renderDetail: () => detailRenders++,
+    setInterval: (handler, delay) => timers.push([handler, delay]),
+  };
+  const enhancement = fs.readFileSync('enhancements.js', 'utf8');
+  vm.runInNewContext(enhancement.slice(0, enhancement.indexOf('async function showTrash()')), background);
+  assert.equal(listeners.filter(([event]) => event === 'focus').length, 0);
+  assert.equal(timers.length, 1);
+  await timers[0][0]();
+  assert.equal(manualSyncs, 0);
+  assert.equal(messages.length, 0);
+  notifications = {updated: [1], errors: []};
+  await timers[0][0]();
+  assert.equal(listRenders, 1);
+  assert.equal(detailRenders, 0, 'Unrelated edits should not replace the open preview');
+  assert.equal(backgroundState.previews[1], undefined);
+  assert.equal(backgroundState.previews[2].cached, true);
+  assert.equal(backgroundState.noteDrafts[2], 'unsaved note');
+  notifications = {updated: [2], errors: []};
+  progressHidden = false;
+  await timers[0][0]();
+  assert.equal(detailRenders, 0, 'Defer notifications during a foreground operation');
+  progressHidden = true;
+  await timers[0][0]();
+  assert.equal(detailRenders, 1);
+  assert.equal(backgroundState.activeFeature, null);
+  assert.equal(backgroundState.noteDrafts[2], 'unsaved note');
+  await elements.get('#sync-repository').onclick();
+  assert.equal(manualSyncs, 1, 'Manual full synchronization remains available');
+  console.log('Background repository notifications and manual sync: OK');
+}
+verifyBackgroundRepositoryUpdates().catch(error => {console.error(error); process.exitCode = 1;});

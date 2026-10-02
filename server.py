@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.2"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -239,7 +239,11 @@ def purge_trash(entry_id):
 
 
 def parse_dna(path: Path):
+    before = path.stat()
     raw = path.read_bytes()
+    after = path.stat()
+    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        raise ValueError("文件仍在写入，请稍后重试")
     pos = 0
     feature_xml = None
     sequence = ""
@@ -289,7 +293,7 @@ def parse_dna(path: Path):
             })
     digest = hashlib.sha256(raw).hexdigest()
     tags = extract_tags(features)
-    return {"sequence": sequence, "circular": circular, "features": features, "sha256": digest, "tags": tags, "file_size": len(raw)}
+    return {"sequence": sequence, "circular": circular, "features": features, "sha256": digest, "tags": tags, "file_size": len(raw), "file_mtime_ns": after.st_mtime_ns}
 
 
 def extract_tags(features):
@@ -655,6 +659,9 @@ def sync_plasmid(item_id, parsed=None):
         if not path.is_file():
             raise FileNotFoundError("导入的原件文件不存在，请检查仓库目录")
         parsed = parsed or parse_dna(path)
+        stat = path.stat()
+        if parsed["file_size"] != stat.st_size or parsed.get("file_mtime_ns", stat.st_mtime_ns) != stat.st_mtime_ns:
+            raise ValueError("文件仍在写入，请稍后重试")
         changed = parsed["sha256"] != row["sha256"] or parsed["file_size"] != row["file_size"]
         with db() as c:
             if changed:
@@ -665,13 +672,13 @@ def sync_plasmid(item_id, parsed=None):
                 if duplicate:
                     raise ValueError("修改后的文件与仓库中的同名质粒完全相同，请先重命名其中一份")
                 c.execute("UPDATE library_plasmids SET sha256=?,file_size=?,file_mtime_ns=? WHERE id=?",
-                          (parsed["sha256"], parsed["file_size"], path.stat().st_mtime_ns, item_id))
+                          (parsed["sha256"], parsed["file_size"], stat.st_mtime_ns, item_id))
                 c.execute("DELETE FROM plasmid_tags WHERE plasmid_id=?", (item_id,))
                 c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, tag["tag"], tag["kind"]) for tag in parsed["tags"]])
             else:
                 c.execute("UPDATE library_plasmids SET file_mtime_ns=? WHERE id=?",
-                          (path.stat().st_mtime_ns, item_id))
+                          (stat.st_mtime_ns, item_id))
         return parsed, changed
 
 
