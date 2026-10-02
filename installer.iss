@@ -1,5 +1,5 @@
 #define AppName "Plasmora"
-#define AppVersion "0.7.1"
+#define AppVersion "0.7.2"
 #define AppPublisher "本机个人工具"
 #define AppExeName "Plasmora.exe"
 
