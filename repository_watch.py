@@ -64,6 +64,9 @@ class RepositoryWatcher:
         self._restart = False
 
     def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="plasmora-file-watch", daemon=True)
         self._thread.start()
 
@@ -169,3 +172,4 @@ class RepositoryWatcher:
         finally:
             if self._watch:
                 self._watch.close()
+                self._watch = None

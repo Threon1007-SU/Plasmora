@@ -45,17 +45,25 @@ async function verifyBackgroundRepositoryUpdates() {
   let listRenders = 0, detailRenders = 0, progressHidden = true;
   const elements = new Map();
   const backgroundState = {storage: {}, selected: 2, activeFeature: 3,
-    previews: {1: {cached: true}, 2: {cached: true}}, noteDrafts: {2: 'unsaved note'}};
+    previews: {1: {cached: true}, 2: {cached: true}}, noteDrafts: {2: 'unsaved note'},
+    plasmids: [{id: 2}]};
+  const savedNotes = [];
+  let noteSaveFails = false;
   const background = {
     window: {addEventListener: (event, handler) => listeners.push([event, handler]), pywebview: {api: {
       sync_repository: async () => {manualSyncs++; return {updated: [], errors: []};},
       take_repository_updates: async () => notifications,
     }}},
-    document: {querySelector: selector => {
+    document: {body: {inert: false}, querySelector: selector => {
       if (!elements.has(selector)) elements.set(selector, {classList: {contains: () => progressHidden}});
       return elements.get(selector);
     }},
     state: backgroundState, toast: message => messages.push(message),
+    api: async (path, options) => {
+      if (noteSaveFails) throw new Error('保存失败');
+      savedNotes.push([path, JSON.parse(options.body).note]);
+      return {};
+    },
     loadPlasmids: async () => {}, renderList: () => listRenders++, renderDetail: () => detailRenders++,
     setInterval: (handler, delay) => timers.push([handler, delay]),
   };
@@ -84,6 +92,21 @@ async function verifyBackgroundRepositoryUpdates() {
   assert.equal(backgroundState.noteDrafts[2], 'unsaved note');
   await elements.get('#sync-repository').onclick();
   assert.equal(manualSyncs, 1, 'Manual full synchronization remains available');
+  const prepared = await background.window.plasmoraPrepareForUpdate();
+  assert.equal(prepared.ready, true);
+  assert.deepEqual(savedNotes, [['/api/plasmids/2/note', 'unsaved note']]);
+  assert.equal(backgroundState.noteDrafts[2], undefined);
+  assert.equal(background.document.body.inert, true, 'Freeze editing until shutdown finishes');
+  background.window.plasmoraCancelUpdate();
+  assert.equal(background.document.body.inert, false);
+  backgroundState.noteDrafts[2] = 'keep draft if saving fails';
+  noteSaveFails = true;
+  const failed = await background.window.plasmoraPrepareForUpdate();
+  assert.equal(failed.ready, false);
+  assert.equal(failed.failed, true);
+  assert.equal(backgroundState.noteDrafts[2], 'keep draft if saving fails');
+  assert.equal(background.document.body.inert, false);
   console.log('Background repository notifications and manual sync: OK');
+  console.log('Update shutdown saves notes and preserves failed drafts: OK');
 }
 verifyBackgroundRepositoryUpdates().catch(error => {console.error(error); process.exitCode = 1;});
