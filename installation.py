@@ -66,6 +66,27 @@ class InstallerShutdown:
         if self._thread:
             self._thread.join(timeout=2)
 
+    def _prepare_window(self):
+        completed = threading.Event()
+        result = []
+
+        def resolved(value):
+            result.append(value)
+            completed.set()
+
+        # pywebview returns Promise results through a callback, not the direct
+        # evaluate_js return value. Wait for note saving to actually finish.
+        immediate = self._api._window.evaluate_js(
+            "window.plasmoraPrepareForUpdate ? window.plasmoraPrepareForUpdate() : ({ready:false})",
+            callback=resolved)
+        if isinstance(immediate, dict):
+            return immediate
+        while not self._stop.is_set():
+            if completed.wait(0.2):
+                value = result[0]
+                return value if isinstance(value, dict) else {"ready": False, "failed": True}
+        return {"ready": False}
+
     def _run(self):
         signal = None
         requested = False
@@ -87,8 +108,7 @@ class InstallerShutdown:
                 self._api._update_requested.set()
                 if failed or not self._api.ready_for_update():
                     continue
-                ready = self._api._window.evaluate_js(
-                    "window.plasmoraPrepareForUpdate ? window.plasmoraPrepareForUpdate() : ({ready:false})")
+                ready = self._prepare_window()
                 if not ready or not ready.get("ready"):
                     failed = bool(ready and ready.get("failed"))
                     continue

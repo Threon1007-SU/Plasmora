@@ -110,7 +110,7 @@ Source: "{source}"; DestDir: "{{app}}"; DestName: "Plasmora.exe"; Flags: ignorev
         mutex = self.kernel.CreateMutexW(None, False, self.mutex_name)
         exited = threading.Event()
         api = DesktopApi()
-        api._window = SimpleNamespace(evaluate_js=lambda script: {"ready": True})
+        api._window = SimpleNamespace(evaluate_js=lambda script, callback=None: {"ready": True})
 
         def quit_app(behavior):
             self.kernel.CloseHandle(mutex)

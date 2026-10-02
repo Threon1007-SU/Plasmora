@@ -66,7 +66,7 @@ class InstallerShutdownTest(unittest.TestCase):
     def test_failed_note_save_requires_retry_without_discarding(self):
         attempted = threading.Event()
 
-        def prepare(script):
+        def prepare(script, callback=None):
             attempted.set()
             return {"ready": False, "failed": True}
 
@@ -79,6 +79,23 @@ class InstallerShutdownTest(unittest.TestCase):
         self.api._window.evaluate_js.side_effect = None
         self.api._window.evaluate_js.return_value = {"ready": True}
         self.signal.event.set()
+        self.assertTrue(self.quit.wait(2))
+
+    def test_async_note_save_must_resolve_before_quitting(self):
+        called = threading.Event()
+        callbacks = []
+
+        def evaluate(script, callback=None):
+            callbacks.append(callback)
+            called.set()
+            return True  # pywebview's immediate Promise acknowledgement
+
+        self.api._window.evaluate_js.side_effect = evaluate
+        self.monitor.start()
+        self.signal.event.set()
+        self.assertTrue(called.wait(2))
+        self.assertFalse(self.quit.is_set())
+        callbacks[0]({"ready": True})
         self.assertTrue(self.quit.wait(2))
 
     def test_new_task_is_rejected_while_existing_import_can_finish(self):
