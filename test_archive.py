@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
+from test_stability import dna_bytes
 
 
 class ArchiveTest(unittest.TestCase):
@@ -33,7 +34,8 @@ class ArchiveTest(unittest.TestCase):
         self.files = []
         with server.db() as c:
             c.execute("INSERT INTO groups(name,created_at) VALUES('质粒组','2026-09-28')")
-            for index, content in enumerate((b"first plasmid", b"second plasmid"), 1):
+            self.contents = [dna_bytes(b"ATGCATGC", "Feature 1"), dna_bytes(b"ATGCATGCA", "Feature 2")]
+            for index, content in enumerate(self.contents, 1):
                 path = self.store / f"plasmid-{index}.dna"
                 path.write_bytes(content)
                 self.files.append(path)
@@ -51,7 +53,7 @@ class ArchiveTest(unittest.TestCase):
         exported = Path(self.temp.name) / "selected.zip"
         self.assertEqual(server.export_plasmids([1], exported)["count"], 1)
         with zipfile.ZipFile(exported) as archive:
-            self.assertEqual(archive.read("质粒/plasmid-1.dna"), b"first plasmid")
+            self.assertEqual(archive.read("质粒/plasmid-1.dna"), self.contents[0])
             self.assertNotIn("质粒/plasmid-2.dna", archive.namelist())
             rows = list(csv.DictReader(io.StringIO(archive.read("质粒清单.csv").decode("utf-8-sig"))))
             self.assertEqual(rows[0]["备注"], "实验备注 1")
@@ -70,8 +72,8 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(first["groups"], ["质粒组"])
         self.assertEqual(first["tags"], ["Feature 1"])
         self.assertEqual(len(server.get_synonym_clusters()), 1)
-        self.assertEqual(server.managed_plasmid_path(1).read_bytes(), b"first plasmid")
-        self.assertEqual(server.managed_plasmid_path(2).read_bytes(), b"second plasmid")
+        self.assertEqual(server.managed_plasmid_path(1).read_bytes(), self.contents[0])
+        self.assertEqual(server.managed_plasmid_path(2).read_bytes(), self.contents[1])
 
     def test_corrupt_backup_and_failed_swap_preserve_current_library(self):
         target = Path(self.temp.name) / "backup.plasmora"
@@ -102,15 +104,15 @@ class ArchiveTest(unittest.TestCase):
         destination = Path(self.temp.name) / "exported.dna"
         result = server.export_one_plasmid(1, destination)
         self.assertTrue(os.path.samefile(result["path"], destination))
-        self.assertEqual(destination.read_bytes(), b"first plasmid")
-        self.assertEqual(self.files[0].read_bytes(), b"first plasmid")
+        self.assertEqual(destination.read_bytes(), self.contents[0])
+        self.assertEqual(self.files[0].read_bytes(), self.contents[0])
         with self.assertRaisesRegex(ValueError, "不能覆盖仓库"):
             server.export_one_plasmid(1, self.files[1])
-        self.assertEqual(self.files[1].read_bytes(), b"second plasmid")
+        self.assertEqual(self.files[1].read_bytes(), self.contents[1])
         self.files[0].write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "不是可识别|不一致"):
             server.export_one_plasmid(1, destination)
-        self.assertEqual(destination.read_bytes(), b"first plasmid")
+        self.assertEqual(destination.read_bytes(), self.contents[0])
 
 
 if __name__ == "__main__":

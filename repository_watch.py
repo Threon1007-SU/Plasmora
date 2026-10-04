@@ -117,11 +117,13 @@ class RepositoryWatcher:
         if not due or self._stop.is_set():
             return
         # Read the index once per changed batch; untouched files are not accessed.
-        # The lock also excludes restore/migration/deletion while checking originals.
+        # Release the repository lock between files so a legacy index backfill
+        # does not block preview/import requests for the entire batch.
         with server.LOCK, server.db() as c:
             rows = c.execute("SELECT id,file_name,storage_path FROM library_plasmids").fetchall()
-            targets = {path_key(row["storage_path"]): row for row in rows}
-            for key, (_, attempts) in due.items():
+        targets = {path_key(row["storage_path"]): row for row in rows}
+        for key, (_, attempts) in due.items():
+            with server.LOCK:
                 if self._stop.is_set():
                     break
                 row = targets.get(key)
