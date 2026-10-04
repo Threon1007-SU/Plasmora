@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.8.0"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -210,6 +210,7 @@ def restore_trash(entry_id):
                                         values).lastrowid
                 c.executemany("INSERT INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, tag["tag"], tag["tag_kind"]) for tag in metadata["tags"]])
+                save_primer_index(c, item_id, parse_dna(target))
                 for group_name in metadata["groups"]:
                     group = c.execute("SELECT id FROM groups WHERE name=?", (group_name,)).fetchone()
                     group_id = group["id"] if group else c.execute(
@@ -246,6 +247,7 @@ def parse_dna(path: Path):
         raise ValueError("文件仍在写入，请稍后重试")
     pos = 0
     feature_xml = None
+    primer_xml = None
     sequence = ""
     circular = False
     if len(raw) < 19 or raw[5:13] != b"SnapGene":
@@ -262,6 +264,8 @@ def parse_dna(path: Path):
             sequence = data[1:].decode("ascii", errors="ignore").upper()
         elif tag == 0x0A:
             feature_xml = data
+        elif tag == 0x05:
+            primer_xml = data
         pos = end
     if not sequence:
         raise ValueError("文件中没有 DNA 序列")
@@ -293,7 +297,76 @@ def parse_dna(path: Path):
             })
     digest = hashlib.sha256(raw).hexdigest()
     tags = extract_tags(features)
-    return {"sequence": sequence, "circular": circular, "features": features, "sha256": digest, "tags": tags, "file_size": len(raw), "file_mtime_ns": after.st_mtime_ns}
+    primers = parse_primers(primer_xml, len(sequence)) if primer_xml else []
+    return {"sequence": sequence, "circular": circular, "features": features, "primers": primers,
+            "sha256": digest, "tags": tags, "file_size": len(raw), "file_mtime_ns": after.st_mtime_ns}
+
+
+def parse_primers(xml, sequence_length):
+    """Read saved primers; display binding coordinates as 1-based inclusive ranges."""
+    root = ET.fromstring(xml)
+
+    def text(value):
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", html.unescape(value or ""))).strip()
+
+    def number(value):
+        try:
+            result = float(value)
+            return result if float('-inf') < result < float('inf') else None
+        except (TypeError, ValueError):
+            return None
+
+    params = root.find(".//HybridizationParams")
+    minimum_length = number(params.get("minContinuousMatchLen")) if params is not None else None
+    minimum_tm = number(params.get("minMeltingTemperature")) if params is not None else None
+    primers = []
+    for node in root.findall(".//Primer"):
+        sequence = re.sub(r"\s+", "", node.get("sequence", ""))
+        sites, seen = [], set()
+        for site in node.findall(".//BindingSite"):
+            match = re.fullmatch(r"(\d+)-(\d+)", site.get("location", ""))
+            if not match:
+                continue
+            # Unlike Feature ranges, saved primer ranges use zero-based inclusive positions.
+            start, end = (int(value) + 1 for value in match.groups())
+            if not (1 <= start <= sequence_length and 1 <= end <= sequence_length):
+                continue
+            annealed = re.sub(r"\s+", "", site.get("annealedBases", ""))
+            tm = number(site.get("meltingTemperature"))
+            if minimum_length is not None and annealed and len(annealed) < minimum_length:
+                continue
+            if minimum_tm is not None and tm is not None and tm < minimum_tm:
+                continue
+            strand = -1 if site.get("boundStrand") == "1" else 1
+            key = (start, end, strand)
+            if key in seen:
+                continue
+            seen.add(key)
+            sites.append({"start": start, "end": end, "strand": strand,
+                          "annealedSequence": annealed, "meltingTemperature": tm})
+        upper = sequence.upper()
+        gc = round(100 * (upper.count("G") + upper.count("C")) / len(upper), 1) if upper and set(upper) <= set("ACGT") else None
+        primers.append({"name": text(node.get("name")), "sequence": sequence, "length": len(sequence),
+                        "gcPercent": gc, "description": text(node.get("description")), "bindingSites": sites})
+    return primers
+
+
+def init_primer_index(c):
+    columns = {row[1] for row in c.execute("PRAGMA table_info(library_plasmids)")}
+    if "primer_indexed" not in columns:
+        c.execute("ALTER TABLE library_plasmids ADD COLUMN primer_indexed INTEGER NOT NULL DEFAULT 0")
+    c.execute("""CREATE TABLE IF NOT EXISTS plasmid_primer_names (
+        plasmid_id INTEGER NOT NULL REFERENCES library_plasmids(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        PRIMARY KEY (plasmid_id, name)
+    )""")
+
+
+def save_primer_index(c, item_id, parsed):
+    c.execute("DELETE FROM plasmid_primer_names WHERE plasmid_id=?", (item_id,))
+    c.executemany("INSERT OR IGNORE INTO plasmid_primer_names(plasmid_id,name) VALUES(?,?)",
+                  [(item_id, primer["name"]) for primer in parsed["primers"] if primer["name"]])
+    c.execute("UPDATE library_plasmids SET primer_indexed=1 WHERE id=?", (item_id,))
 
 
 def extract_tags(features):
@@ -369,6 +442,7 @@ def init_db():
         if "file_mtime_ns" not in plasmid_columns:
             c.execute("ALTER TABLE library_plasmids ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0")
         migrate_plasmid_uniqueness(c)
+        init_primer_index(c)
         if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='aliases'").fetchone():
             for row in c.execute("SELECT canonical,alias FROM aliases").fetchall():
                 if str(row["canonical"]).strip().casefold() != str(row["alias"]).strip().casefold():
@@ -537,6 +611,7 @@ def _replace_imported_plasmid(source, parsed, existing, group_id):
             c.execute("DELETE FROM plasmid_tags WHERE plasmid_id=?", (existing["id"],))
             c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                           [(existing["id"], tag["tag"], tag["kind"]) for tag in parsed["tags"]])
+            save_primer_index(c, existing["id"], parsed)
             grouped = c.execute("INSERT OR IGNORE INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)",
                                 (existing["id"], group_id)).rowcount if group_id is not None else 0
         try:
@@ -605,6 +680,7 @@ def import_one(source_path, group_id=None, on_conflict="copy", existing_id=None)
                 item_id = cur.lastrowid
                 c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, t["tag"], t["kind"]) for t in parsed["tags"]])
+                save_primer_index(c, item_id, parsed)
                 grouped = c.execute("INSERT INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)", (item_id, group_id)).rowcount if group_id is not None else 0
             return {"id": item_id, "name": name, "duplicate": False, "grouped": grouped}
         except Exception:
@@ -630,7 +706,10 @@ def import_files(paths, group_id=None):
 
 def get_plasmids():
     with db() as c:
-        rows = c.execute("SELECT id,file_name,stored_name,sha256,file_size,imported_at,note,favorite,last_viewed_at FROM library_plasmids ORDER BY file_name COLLATE NOCASE").fetchall()
+        rows = c.execute("SELECT id,file_name,stored_name,sha256,file_size,imported_at,note,favorite,last_viewed_at,primer_indexed FROM library_plasmids ORDER BY file_name COLLATE NOCASE").fetchall()
+        primer_names = {}
+        for r in c.execute("SELECT plasmid_id,name FROM plasmid_primer_names ORDER BY name COLLATE NOCASE"):
+            primer_names.setdefault(r["plasmid_id"], []).append(r["name"])
         tags = {}
         for r in c.execute("SELECT plasmid_id,tag FROM plasmid_tags ORDER BY tag COLLATE NOCASE"):
             tags.setdefault(r["plasmid_id"], []).append(r["tag"])
@@ -643,6 +722,7 @@ def get_plasmids():
             "note": r["note"],
             "favorite": bool(r["favorite"]), "lastViewedAt": r["last_viewed_at"],
             "tags": tags.get(r["id"], []),
+            "primerNames": primer_names.get(r["id"], []), "primerIndexed": bool(r["primer_indexed"]),
             "groups": [g[1] for g in groups.get(r["id"], [])],
             "groupIds": [g[0] for g in groups.get(r["id"], [])],
         } for r in rows]
@@ -651,7 +731,7 @@ def get_plasmids():
 def sync_plasmid(item_id, parsed=None):
     with LOCK:
         with db() as c:
-            row = c.execute("SELECT id,file_name,storage_path,sha256,file_size,file_mtime_ns FROM library_plasmids WHERE id=?",
+            row = c.execute("SELECT id,file_name,storage_path,sha256,file_size,file_mtime_ns,primer_indexed FROM library_plasmids WHERE id=?",
                             (item_id,)).fetchone()
         if not row:
             raise FileNotFoundError("仓库中已没有这条质粒记录")
@@ -679,17 +759,22 @@ def sync_plasmid(item_id, parsed=None):
             else:
                 c.execute("UPDATE library_plasmids SET file_mtime_ns=? WHERE id=?",
                           (stat.st_mtime_ns, item_id))
-        return parsed, changed
+            if changed or not row["primer_indexed"]:
+                save_primer_index(c, item_id, parsed)
+        return parsed, changed or not row["primer_indexed"]
 
 
 def sync_plasmid_if_changed(item_id):
     with db() as c:
-        row = c.execute("SELECT id,storage_path,sha256,file_size,file_mtime_ns FROM library_plasmids WHERE id=?",
+        row = c.execute("SELECT id,storage_path,sha256,file_size,file_mtime_ns,primer_indexed FROM library_plasmids WHERE id=?",
                         (item_id,)).fetchone()
     if not row:
         raise FileNotFoundError("仓库中已没有这条质粒记录")
     path = Path(row["storage_path"])
     stat = path.stat()
+    if not row["primer_indexed"]:
+        _, changed = sync_plasmid(item_id)
+        return changed
     if stat.st_mtime_ns == row["file_mtime_ns"] and stat.st_size == row["file_size"]:
         return False
     if stat.st_size == row["file_size"]:
@@ -809,7 +894,7 @@ def preview_plasmid(item_id):
     parsed = parse_dna(path)
     _, changed = sync_plasmid(item_id, parsed)
     return {"id": item_id, "name": row["file_name"], "length": len(parsed["sequence"]),
-            "circular": parsed["circular"], "features": parsed["features"], "metadataChanged": changed}
+            "circular": parsed["circular"], "features": parsed["features"], "primers": parsed["primers"], "metadataChanged": changed}
 
 
 def _copy_with_hash(source, destination=None):
@@ -986,6 +1071,7 @@ def restore_backup(path, progress=None, cancel=None):
                 restored.execute("INSERT INTO app_settings(key,value) VALUES('storage_dir',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(STORAGE_ROOT),))
                 restored.commit()
                 migrate_plasmid_uniqueness(restored)
+                init_primer_index(restored)
                 restored.commit()
                 if restored.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("恢复后的数据库完整性检查失败")
