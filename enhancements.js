@@ -47,7 +47,7 @@ async function applyRepositoryUpdates(result, automatic = false) {
       state.activeFeature = null;
       renderDetail();
     }
-    toast(`${automatic ? '已自动同步' : '已同步'} ${result.updated.length} 个外部修改的质粒`);
+    toast(`${automatic ? '已自动同步' : '已同步'} ${result.updated.length} 个质粒的索引`);
   }
   if (result.errors.length) toast(`${result.errors.length} 项无法同步，请查看日志或手动同步仓库`);
 }

@@ -37,7 +37,7 @@
       <div class="workspace-grid">
         <section class="list-panel glass-panel">
           <div class="list-toolbar"><label class="search-box"><span>⌕</span><input id="search" placeholder="搜索文件名、feature 或同义词…" autocomplete="off"/><kbd>Enter</kbd></label><label class="sort-control"><span>排序</span><select id="sort-order" aria-label="质粒列表排序"><option value="name_asc">文件名 A→Z</option><option value="name_desc">文件名 Z→A</option><option value="import_new">最近导入</option><option value="import_old">最早导入</option><option value="size_large">文件最大优先</option><option value="size_small">文件最小优先</option></select></label></div>
-          <div class="search-hint" id="search-hint"><label class="search-scope"><input id="search-details" type="checkbox" checked/><span>包含 Feature 与备注</span></label><span>关闭后仅搜索文件名；同义词集群仍生效</span></div>
+          <div class="search-hint" id="search-hint"><div class="search-options"><label class="search-scope"><input id="search-details" type="checkbox" checked/><span>包含 Feature 与备注</span></label><label class="search-scope"><input id="search-primers" type="checkbox"/><span>搜索引物名称</span></label></div><span id="search-scope-hint">文件名始终参与搜索；同义词集群仍生效</span></div>
           <div class="plasmid-list" id="plasmid-list"><div class="loading">读取质粒索引…</div></div>
           <div class="list-footer"><span id="result-count">0 个结果</span><span>外部修改可通过“同步仓库”更新索引</span></div>
         </section>
