@@ -44,12 +44,17 @@
         <section class="detail-panel glass-panel" id="detail-panel"><div class="empty-detail"><div class="empty-orbit"><span>⌁</span></div><h2>选择一个质粒</h2><p>预览环状图谱、feature 坐标与注释</p></div></section>
       </div>
     </section>
+    <section id="history-view" class="view hidden">
+      <div class="page-heading"><div><p class="eyebrow">FILE HISTORY</p><h1 id="history-title">文件副本</h1><p class="subtitle">原件与按日保存的副本 · 点击左侧条目预览</p></div><button class="button" id="history-back">← 返回仓库</button></div>
+      <div class="workspace-grid"><section class="list-panel glass-panel"><div class="history-list-heading"><strong>全部副本</strong><span id="history-count"></span></div><div class="plasmid-list" id="history-list"></div></section><section class="detail-panel glass-panel" id="history-detail-panel"></section></div>
+    </section>
     <section id="aliases-view" class="view hidden">
       <div class="page-heading"><div><p class="eyebrow">SEARCH VOCABULARY</p><h1>同义词集群</h1><p class="subtitle">同一集群内的所有词互为同义词，搜索任意一个即可匹配其他词。</p></div></div>
       <div class="vocabulary-card glass-panel"><form id="cluster-form" class="cluster-form"><label>集群中的词（用逗号或换行分隔，至少两个）<textarea name="terms" rows="3" placeholder="例如 ITPR1，IP3R1，IP3 receptor type 1" required></textarea></label><button class="button button-gold" type="submit">创建集群</button></form><p class="cluster-hint">输入已有集群中的词会将相关集群合并。</p><div id="cluster-list"></div></div>
     </section>
     <section id="settings-view" class="view hidden">
       <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="subtitle">按自己的习惯调整 Plasmora。</p></div></div>
+      <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>文件版本</h2><p>保留导入原件和往日副本，每天使用一份工作副本。</p></div></div><label class="daily-versions-option"><input type="checkbox" id="daily-versions"/><span><strong>按日更改生成副本</strong><small>每天首次在 SnapGene 中打开时建立当天副本，同一天反复保存更新该副本。跨天继续保存也会归入当天副本。关闭后继续修改最新副本，已保存历史仍保留。</small></span></label><p class="subtitle" id="daily-versions-status">启用时先保护现有原件；备份和目录迁移会包含历史副本。</p></div>
       <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>关闭窗口时</h2><p>选择点击窗口右上角关闭按钮后的行为。</p></div></div><div class="settings-options" id="close-behavior-options"><label><input type="radio" name="close-behavior" value="ask"/><span><strong>每次询问</strong><small>关闭时选择最小化到托盘或直接退出</small></span></label><label><input type="radio" name="close-behavior" value="tray"/><span><strong>最小化到托盘</strong><small>继续在系统托盘运行，双击图标可重新打开</small></span></label><label><input type="radio" name="close-behavior" value="quit"/><span><strong>直接关闭</strong><small>退出 Plasmora</small></span></label></div></div>
       <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>装扮选择</h2><p>选择界面配色，设置会保存在这台电脑上。</p></div></div><div class="theme-grid" id="theme-grid"></div></div>
       <div class="settings-section glass-panel"><div class="settings-section-head"><div><h2>关于 Plasmora</h2><p>本机质粒仓库 · <span id="about-version">读取版本中…</span> · MIT 许可证</p><p>错误日志仅保存在本机，可用于排查导入、备份和恢复问题。</p></div></div><div class="about-actions"><button class="button" id="open-project-page">打开项目主页</button><button class="button" id="open-log-folder">打开日志文件夹</button></div></div>
@@ -65,6 +70,7 @@
   <div class="modal-backdrop hidden" id="close-choice-modal"><div class="modal action-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="close-choice-title"><p class="eyebrow">CLOSE PLASMORA</p><h2 id="close-choice-title">关闭窗口</h2><p class="subtitle">希望 Plasmora 接下来怎么运行？</p><label class="close-remember"><input type="checkbox" id="remember-close-choice"/><span>记住我的选择，不再提示</span></label><div class="dialog-buttons"><button class="button" id="cancel-close-choice" type="button">取消</button><button class="button" id="close-to-tray" type="button">最小化到托盘</button><button class="button button-gold" id="close-quit" type="button">直接关闭</button></div></div></div>
   <div class="modal-backdrop hidden" id="operation-progress"><div class="modal action-dialog glass-panel" role="status" aria-live="polite"><p class="eyebrow">WORK IN PROGRESS</p><h2 id="operation-title">正在处理</h2><p class="subtitle" id="operation-message">正在准备…</p><progress id="operation-bar" max="1" value="0"></progress><p class="operation-count" id="operation-count"></p><div class="dialog-buttons"><button class="button" id="cancel-operation" type="button">完成当前文件后取消</button></div></div></div>
   <script src="app.js"></script>
+  <script src="history.js"></script>
   <script src="enhancements.js"></script>
 </body>
 </html>

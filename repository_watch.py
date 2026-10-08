@@ -85,7 +85,7 @@ class RepositoryWatcher:
     def _queue_recheck(self):
         # Only on startup, changing repository, or lost file notifications.
         with server.LOCK, server.db() as c:
-            paths = c.execute("SELECT storage_path FROM library_plasmids").fetchall()
+            paths = c.execute("SELECT storage_path FROM library_plasmids UNION SELECT path FROM plasmid_versions").fetchall()
         for row in paths:
             self.queue_path(row["storage_path"])
 
@@ -120,7 +120,8 @@ class RepositoryWatcher:
         # Release the repository lock between files so a legacy index backfill
         # does not block preview/import requests for the entire batch.
         with server.LOCK, server.db() as c:
-            rows = c.execute("SELECT id,file_name,storage_path FROM library_plasmids").fetchall()
+            rows = c.execute("""SELECT id,file_name,storage_path FROM library_plasmids
+                UNION SELECT v.plasmid_id,p.file_name,v.path FROM plasmid_versions v JOIN library_plasmids p ON p.id=v.plasmid_id""").fetchall()
         targets = {path_key(row["storage_path"]): row for row in rows}
         for key, (_, attempts) in due.items():
             with server.LOCK:
@@ -130,7 +131,13 @@ class RepositoryWatcher:
                 if not row:
                     continue  # Unmanaged drops and deleted records are not imported here.
                 try:
-                    changed = server.sync_plasmid_if_changed(row["id"])
+                    with server.db() as c:
+                        current = c.execute('SELECT storage_path FROM library_plasmids WHERE id=?', (row['id'],)).fetchone()
+                    if current and path_key(current['storage_path']) == key:
+                        changed = server.sync_plasmid_if_changed(row["id"])
+                    else:
+                        import versions
+                        changed = versions.sync_path(row['storage_path'])
                     with self._lock:
                         self._reported.pop(key, None)
                         self._errors.pop(key, None)
