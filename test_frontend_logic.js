@@ -63,12 +63,30 @@ console.log('Frontend search scopes and collections: OK');
 
 const historySource = fs.readFileSync('history.js','utf8');
 const historyContext = {Date,esc:context.hooks.esc||((s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])))};
-vm.runInNewContext(historySource.slice(0,historySource.indexOf("$('#history-back').onclick"))+'\nglobalThis.renderEntries=renderVersionEntries;', historyContext);
+vm.runInNewContext(historySource.slice(0,historySource.indexOf("$('#history-back').onclick"))+'\nglobalThis.renderEntries=renderVersionEntries;globalThis.versionActions=openVersionActions;', historyContext);
 const historyMarkup=historyContext.renderEntries([{id:3,name:'<unsafe>.dna',time:'2026-10-08T12:00:00+08:00',latest:true,original:false,size:2048}],3);
 assert.match(historyMarkup,/&lt;unsafe&gt;.dna/);
 assert.match(historyMarkup,/history-card selected/);
 assert.match(historyMarkup,/最新版本/);
 console.log('History list escaping, selection and latest marker: OK');
+
+async function verifySelectedVersionLaunch(){
+  const calls=[],messages=[];
+  let select;
+  historyContext.openContextMenu=(event,items,onSelect)=>{select=onSelect};
+  historyContext.window={pywebview:{api:{}}};
+  historyContext.window.pywebview.api.open_in_snapgene=async (...args)=>{calls.push(args);return {ok:true,method:'snapgene'}};
+  historyContext.toast=message=>messages.push(message);
+  historyContext.versionActions(7,12,{});
+  await select('snapgene');
+  assert.deepEqual(calls,[[7,12]],'History actions must pass both the family and selected revision');
+  assert.match(messages.pop(),/所选副本/);
+  historyContext.window.pywebview.api.open_in_snapgene=async()=>({error:'副本已不存在'});
+  await select('snapgene');
+  assert.equal(messages.pop(),'副本已不存在');
+  console.log('Selected history version launch and errors: OK');
+}
+verifySelectedVersionLaunch().catch(error=>{console.error(error);process.exitCode=1});
 
 async function verifyBackgroundRepositoryUpdates() {
   const listeners = [];

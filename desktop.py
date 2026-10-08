@@ -346,10 +346,11 @@ class DesktopApi:
         except Exception as exc:
             return {"error": str(exc)}
 
-    def open_in_snapgene(self, plasmid_id):
+    def open_in_snapgene(self, plasmid_id, version_id=None):
         try:
             import versions
-            path = versions.prepare_edit(int(plasmid_id))
+            path = (versions.prepare_edit(int(plasmid_id)) if version_id is None
+                    else versions.selected_version_path(int(plasmid_id), int(version_id)))
             executable = find_snapgene()
             if executable:
                 subprocess.Popen([str(executable), str(path)])

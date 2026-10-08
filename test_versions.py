@@ -224,6 +224,48 @@ class DailyVersionsTest(unittest.TestCase):
             self.assertEqual(versions.version_paths(c), before)
         self.assertTrue(all(path.is_file() for path in before))
 
+    def test_snapgene_opens_selected_history_and_saved_edits_preserve_history(self):
+        import desktop
+        versions.set_enabled(True)
+        yesterday = versions.prepare_edit(self.item_id)
+        yesterday.write_bytes(primer_dna('Yesterday-F'))
+        server.sync_plasmid_if_changed(self.item_id)
+        revision = next(v for v in versions.list_versions(self.item_id) if v['latest'])
+        self.day = '2026-10-09'
+        latest = versions.prepare_edit(self.item_id)
+        api = desktop.DesktopApi()
+        with patch.object(desktop, 'find_snapgene', return_value=self.root / 'SnapGene.exe'), \
+             patch.object(desktop.subprocess, 'Popen') as launch:
+            self.assertTrue(api.open_in_snapgene(self.item_id, revision['id'])['ok'])
+            self.assertEqual(Path(launch.call_args.args[0][1]), yesterday)
+            self.assertEqual(server.managed_plasmid_path(self.item_id), latest)
+        yesterday.write_bytes(primer_dna('Edit-from-history-F'))
+        versions.sync_path(yesterday)
+        self.assertEqual(server.preview_plasmid(self.item_id)['primers'][0]['name'], 'Edit-from-history-F')
+        self.assertEqual(versions.preview(self.item_id, revision['id'])['primers'][0]['name'], 'Yesterday-F')
+        self.assertEqual(server.parse_dna(yesterday)['primers'][0]['name'], 'Yesterday-F')
+
+    def test_selected_history_validates_family_and_association_uses_selected_path(self):
+        import desktop
+        api = desktop.DesktopApi()
+        with patch.object(desktop, 'find_snapgene', return_value=None), patch.object(desktop.os, 'startfile', create=True) as launch:
+            self.assertTrue(api.open_in_snapgene(self.item_id, 0)['ok'])
+            self.assertEqual(Path(launch.call_args.args[0]), self.original)
+        versions.set_enabled(True)
+        original = versions.list_versions(self.item_id)[0]
+        versions.prepare_edit(self.item_id)
+        other = self.root / 'other.dna'
+        other.write_bytes(primer_dna('Other-F'))
+        other_id = server.import_one(other)['id']
+        with patch.object(desktop, 'find_snapgene', return_value=None), patch.object(desktop.os, 'startfile', create=True) as launch:
+            self.assertTrue(api.open_in_snapgene(self.item_id, original['id'])['ok'])
+            self.assertEqual(Path(launch.call_args.args[0]), self.original)
+            launch.reset_mock()
+            self.assertIn('error', api.open_in_snapgene(other_id, original['id']))
+            self.assertIn('error', api.open_in_snapgene(self.item_id, 0))
+            self.assertIn('error', api.open_in_snapgene(self.item_id, 999999))
+            launch.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
