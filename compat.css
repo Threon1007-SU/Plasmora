@@ -1,4 +1,24 @@
 /* Keep native controls consistent without relying on remote fonts or assets. */
+.daily-versions-option { display: flex; align-items: flex-start; gap: 12px; color: var(--theme-text); cursor: pointer; }
+.daily-versions-option input { margin-top: 4px; accent-color: var(--theme-accent); }
+.daily-versions-option strong, .daily-versions-option small { display: block; }
+.daily-versions-option small { max-width: 760px; margin-top: 7px; color: var(--theme-muted); font-size: 12px; line-height: 1.7; }
+.history-list-heading { display: flex; justify-content: space-between; padding: 16px; color: var(--theme-text); border-bottom: 1px solid var(--theme-line); font-size: 13px; }
+.history-list-heading span { color: var(--theme-muted); }
+.history-card { display: flex; flex-direction: column; width: 100%; gap: 7px; padding: 16px; text-align: left; border: 0; border-left: 2px solid transparent; border-bottom: 1px solid var(--theme-line); color: var(--theme-text); background: transparent; cursor: pointer; }
+.history-card.selected { border-left-color: var(--theme-accent); background: color-mix(in srgb, var(--theme-accent) 10%, transparent); }
+.history-card:hover { background: color-mix(in srgb, var(--theme-accent) 7%, transparent); }
+.history-card strong { font-size: 14px; overflow-wrap: anywhere; }
+.history-card time, .history-card > span { font-size: 12px; color: var(--theme-muted); }
+.history-card:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
+.context-chevron { float: right; padding-left: 18px; }
+.context-submenu { position: fixed; z-index: 41; width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 5px; border: 1px solid var(--theme-line); border-radius: 10px; background: var(--theme-bg); color: var(--theme-text); box-shadow: 0 12px 34px rgba(0,0,0,.3); }
+.history-menu-item { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 9px; border: 0; border-radius: 6px; text-align: left; background: transparent; color: var(--theme-text); cursor: pointer; }
+.history-menu-item:hover, .history-menu-item:focus-visible { background: color-mix(in srgb, var(--theme-accent) 16%, transparent); outline: none; }
+.history-menu-item span { font-size: 12px; overflow-wrap: anywhere; }
+.history-menu-item time, .history-menu-caption { color: var(--theme-muted); font-size: 11px; }
+.history-menu-caption { padding: 8px 9px; }
+@media (min-width: 1181px) { #history-view { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; } }
 .search-options { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 #search-scope-hint { flex-basis: 100%; }
 .preview-mode { display: flex; gap: 4px; width: fit-content; max-width: 100%; padding: 4px; margin: 16px 0; border: 1px solid var(--theme-line); border-radius: 10px; background: color-mix(in srgb, var(--theme-bg) 65%, transparent); }

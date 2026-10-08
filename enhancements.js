@@ -1,6 +1,6 @@
 const progressTitles = {
   import: '正在导入质粒', export: '正在导出质粒', sync: '正在同步仓库', backup: '正在创建备份',
-  verify: '正在校验备份', restore: '正在恢复仓库', move: '正在迁移原件'
+  verify: '正在校验备份', restore: '正在恢复仓库', move: '正在迁移原件', versioning: '正在保护原件并启用按日副本'
 };
 
 window.plasmoraProgress = function (update) {
@@ -43,7 +43,9 @@ async function applyRepositoryUpdates(result, automatic = false) {
     for (const id of result.updated) delete state.previews[id];
     await loadPlasmids();
     renderList();
-    if (result.updated.includes(state.selected)) {
+    if (state.view === 'history' && result.updated.includes(state.historyPlasmid)) {
+      await refreshHistory();
+    } else if (result.updated.includes(state.selected)) {
       state.activeFeature = null;
       renderDetail();
     }

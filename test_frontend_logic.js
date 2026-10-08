@@ -61,6 +61,15 @@ assert.deepEqual(Array.from(sortedPlasmids(filtered()), p => p.id), [2, 1]);
 assert.equal(dragExportDescriptor({id: 7, name: 'JH:sample.dna'}, 'http://127.0.0.1:1234'), 'application/octet-stream:JH_sample.dna:http://127.0.0.1:1234/api/file/7');
 console.log('Frontend search scopes and collections: OK');
 
+const historySource = fs.readFileSync('history.js','utf8');
+const historyContext = {Date,esc:context.hooks.esc||((s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])))};
+vm.runInNewContext(historySource.slice(0,historySource.indexOf("$('#history-back').onclick"))+'\nglobalThis.renderEntries=renderVersionEntries;', historyContext);
+const historyMarkup=historyContext.renderEntries([{id:3,name:'<unsafe>.dna',time:'2026-10-08T12:00:00+08:00',latest:true,original:false,size:2048}],3);
+assert.match(historyMarkup,/&lt;unsafe&gt;.dna/);
+assert.match(historyMarkup,/history-card selected/);
+assert.match(historyMarkup,/最新版本/);
+console.log('History list escaping, selection and latest marker: OK');
+
 async function verifyBackgroundRepositoryUpdates() {
   const listeners = [];
   const timers = [];
