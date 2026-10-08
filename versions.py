@@ -221,6 +221,33 @@ def sync_path(path):
         return _sync_path(path)
 
 
+def selected_version_path(item_id, version_id):
+    """Open an explicitly selected revision rather than preparing today's head."""
+    with server.LOCK, server.db() as c:
+        library = c.execute('SELECT storage_path FROM library_plasmids WHERE id=?', (item_id,)).fetchone()
+        if not library:
+            raise FileNotFoundError('质粒已不存在')
+        if version_id == 0:
+            if c.execute('SELECT 1 FROM plasmid_versions WHERE plasmid_id=?', (item_id,)).fetchone():
+                raise FileNotFoundError('副本列表已更新，请重新选择副本')
+            path = Path(library['storage_path'])
+        else:
+            version = c.execute('SELECT path FROM plasmid_versions WHERE id=? AND plasmid_id=?', (version_id, item_id)).fetchone()
+            if not version:
+                raise FileNotFoundError('副本已不存在')
+            path = Path(version['path'])
+        if server.STORAGE_ROOT.resolve() not in path.resolve().parents or not path.is_file():
+            raise FileNotFoundError('所选副本文件不存在或不在当前仓库中')
+        # Capture pending external edits first; restore an old public copy from
+        # its snapshot before opening it. Subsequent watcher edits follow the
+        # same daily protection rules as any other managed public copy.
+        if version_id == 0:
+            server.sync_plasmid_if_changed(item_id)
+        else:
+            sync_path(path)
+        return path
+
+
 def _sync_path(path):
     with server.LOCK, server.db() as c:
         version = c.execute('SELECT * FROM plasmid_versions WHERE path=?', (str(path),)).fetchone()
