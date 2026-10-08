@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.9.0"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -154,6 +154,8 @@ def _archive_plasmid(c, item_id, reason):
             digest, size = _copy_with_hash(original, output)
         if digest != row["sha256"] or size != row["file_size"]:
             raise ValueError("原件已在仓库外修改，请先同步后重试")
+        import versions
+        metadata['versions'] = versions.archive_history(c, item_id, folder)
         with trash_db() as trash:
             entry_id = trash.execute(
                 "INSERT INTO trash_items(deleted_at,reason,metadata_json,trash_path) VALUES(?,?,?,?)",
@@ -163,6 +165,8 @@ def _archive_plasmid(c, item_id, reason):
         return entry_id, destination
     except Exception:
         destination.unlink(missing_ok=True)
+        import versions
+        versions.clean_trash_history(metadata)
         raise
 
 
@@ -185,6 +189,7 @@ def restore_trash(entry_id):
         if not source.is_file() or (LOCAL_DATA / "Trash").resolve() not in source.resolve().parents:
             raise FileNotFoundError("回收站中的质粒文件不存在")
         STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+        history_created = []
         with db() as c:
             name = metadata["file_name"]
             if c.execute("SELECT 1 FROM library_plasmids WHERE file_name=? COLLATE NOCASE", (name,)).fetchone():
@@ -211,6 +216,10 @@ def restore_trash(entry_id):
                 c.executemany("INSERT INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, tag["tag"], tag["tag_kind"]) for tag in metadata["tags"]])
                 save_primer_index(c, item_id, parse_dna(target))
+                import versions
+                versions.restore_history(c, item_id, metadata.get('versions', []), target, history_created)
+                if not metadata.get('versions'):
+                    versions.register_import(c, item_id)
                 for group_name in metadata["groups"]:
                     group = c.execute("SELECT id FROM groups WHERE name=?", (group_name,)).fetchone()
                     group_id = group["id"] if group else c.execute(
@@ -219,16 +228,19 @@ def restore_trash(entry_id):
                     c.execute("INSERT OR IGNORE INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)", (item_id, group_id))
             except Exception:
                 target.unlink(missing_ok=True)
+                for created in history_created:
+                    created.unlink(missing_ok=True)
                 raise
         with trash_db() as trash:
             trash.execute("DELETE FROM trash_items WHERE id=?", (entry_id,))
         source.unlink(missing_ok=True)
+        versions.clean_trash_history(metadata)
         return {"id": item_id, "name": name}
 
 
 def purge_trash(entry_id):
     with LOCK, trash_db() as trash:
-        entry = trash.execute("SELECT trash_path FROM trash_items WHERE id=?", (entry_id,)).fetchone()
+        entry = trash.execute("SELECT trash_path,metadata_json FROM trash_items WHERE id=?", (entry_id,)).fetchone()
         if not entry:
             raise FileNotFoundError("回收站中没有这条记录")
         path = Path(entry["trash_path"])
@@ -236,6 +248,8 @@ def purge_trash(entry_id):
             raise ValueError("回收站路径无效")
         if path.exists():
             path.unlink()
+        import versions
+        versions.clean_trash_history(json.loads(entry['metadata_json']))
         trash.execute("DELETE FROM trash_items WHERE id=?", (entry_id,))
 
 
@@ -443,6 +457,8 @@ def init_db():
             c.execute("ALTER TABLE library_plasmids ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0")
         migrate_plasmid_uniqueness(c)
         init_primer_index(c)
+        import versions
+        versions.init_schema(c)
         if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='aliases'").fetchone():
             for row in c.execute("SELECT canonical,alias FROM aliases").fetchall():
                 if str(row["canonical"]).strip().casefold() != str(row["alias"]).strip().casefold():
@@ -587,6 +603,19 @@ def _numbered_import_name(c, name):
 
 
 def _replace_imported_plasmid(source, parsed, existing, group_id):
+    import versions
+    with db() as c:
+        history = c.execute('SELECT 1 FROM plasmid_versions WHERE plasmid_id=?', (existing['id'],)).fetchone()
+    if history:
+        versions.sync_family(existing['id'])
+        with db() as c:
+            trash_id, _ = _archive_plasmid(c, existing['id'], 'replaced')
+        versions.accept_change(existing['id'], source, parsed, force_copy=True)
+        sync_plasmid(existing['id'], manage_versions=False)
+        with db() as c:
+            c.execute('UPDATE library_plasmids SET imported_at=? WHERE id=?', (datetime.now().isoformat(timespec='seconds'), existing['id']))
+            grouped = c.execute('INSERT OR IGNORE INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)', (existing['id'], group_id)).rowcount if group_id is not None else 0
+        return {'id': existing['id'], 'name': existing['file_name'], 'replaced': True, 'grouped': grouped, 'trashId': trash_id}
     target = Path(existing["storage_path"])
     if STORAGE_ROOT.resolve() not in target.resolve().parents or not target.is_file():
         raise FileNotFoundError("仓库中的原有质粒文件不存在，无法替换")
@@ -681,6 +710,8 @@ def import_one(source_path, group_id=None, on_conflict="copy", existing_id=None)
                 c.executemany("INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, t["tag"], t["kind"]) for t in parsed["tags"]])
                 save_primer_index(c, item_id, parsed)
+                import versions
+                versions.register_import(c, item_id)
                 grouped = c.execute("INSERT INTO plasmid_groups(plasmid_id,group_id) VALUES(?,?)", (item_id, group_id)).rowcount if group_id is not None else 0
             return {"id": item_id, "name": name, "duplicate": False, "grouped": grouped}
         except Exception:
@@ -728,7 +759,7 @@ def get_plasmids():
         } for r in rows]
 
 
-def sync_plasmid(item_id, parsed=None):
+def sync_plasmid(item_id, parsed=None, manage_versions=True):
     with LOCK:
         with db() as c:
             row = c.execute("SELECT id,file_name,storage_path,sha256,file_size,file_mtime_ns,primer_indexed FROM library_plasmids WHERE id=?",
@@ -743,6 +774,13 @@ def sync_plasmid(item_id, parsed=None):
         if parsed["file_size"] != stat.st_size or parsed.get("file_mtime_ns", stat.st_mtime_ns) != stat.st_mtime_ns:
             raise ValueError("文件仍在写入，请稍后重试")
         changed = parsed["sha256"] != row["sha256"] or parsed["file_size"] != row["file_size"]
+        if changed and manage_versions:
+            import versions
+            target = versions.accept_change(item_id, path, parsed)
+            if target != path:
+                path = target
+                parsed = parse_dna(path)
+                stat = path.stat()
         with db() as c:
             if changed:
                 duplicate = c.execute(
@@ -796,7 +834,8 @@ def sync_changed_plasmids(progress=None, cancel=None):
         check_cancel(cancel)
         report_progress(progress, "sync", index - 1, len(rows), row["file_name"])
         try:
-            if sync_plasmid_if_changed(row["id"]):
+            import versions
+            if versions.sync_family(row["id"]):
                 updated.append(row["id"])
         except Exception as exc:
             LOGGER.exception("同步质粒失败：%s", row["file_name"])
@@ -865,6 +904,11 @@ def mark_plasmid_viewed(item_id):
 
 def delete_plasmid(item_id):
     with LOCK:
+        import versions
+        with db() as c:
+            has_history = c.execute('SELECT 1 FROM plasmid_versions WHERE plasmid_id=?', (item_id,)).fetchone()
+        if has_history:
+            versions.sync_family(item_id)
         with db() as c:
             row = c.execute("SELECT storage_path FROM library_plasmids WHERE id=?", (item_id,)).fetchone()
         if not row:
@@ -874,10 +918,14 @@ def delete_plasmid(item_id):
         if STORAGE_ROOT.resolve() not in path.resolve().parents:
             raise ValueError("原件路径不在当前仓库中，无法安全删除")
         with db() as c:
+            history_paths = versions.version_paths(c, item_id)
             trash_id, _ = _archive_plasmid(c, item_id, "deleted")
             c.execute("DELETE FROM library_plasmids WHERE id=?", (item_id,))
         try:
             path.unlink(missing_ok=True)
+            for history_path in history_paths:
+                if STORAGE_ROOT.resolve() in history_path.resolve().parents:
+                    history_path.unlink(missing_ok=True)
         except OSError:
             LOGGER.exception("删除后清理原件失败：%s", path.name)
         return {"trashId": trash_id}
@@ -892,7 +940,7 @@ def preview_plasmid(item_id):
     if not path.is_file():
         raise FileNotFoundError("导入的原件文件不存在，请检查仓库目录")
     parsed = parse_dna(path)
-    _, changed = sync_plasmid(item_id, parsed)
+    parsed, changed = sync_plasmid(item_id, parsed)
     return {"id": item_id, "name": row["file_name"], "length": len(parsed["sequence"]),
             "circular": parsed["circular"], "features": parsed["features"], "primers": parsed["primers"], "metadataChanged": changed}
 
@@ -952,6 +1000,10 @@ def backup_library(destination, progress=None, cancel=None):
                     if digest != record["sha256"] or size != record["file_size"]:
                         raise ValueError(f"备份失败，质粒文件与仓库记录不一致：{path.name}")
                     manifest["files"].append({"id": record["id"], "sha256": digest, "size": size})
+                import versions
+                with closing(sqlite3.connect(snapshot_path)) as snapshot:
+                    snapshot.row_factory = sqlite3.Row
+                    versions.backup_history(snapshot, archive, manifest, progress, cancel)
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             check_cancel(cancel)
             os.replace(temporary, destination)
@@ -979,6 +1031,13 @@ def _verify_backup_archive(path, work, extract_files=False, progress=None, cance
             if type(item.get("id")) is not int or item["id"] <= 0 or not isinstance(item.get("sha256"), str) or type(item.get("size")) is not int or item["size"] < 0:
                 raise ValueError("备份文件清单无效")
             expected.add(f"files/{item['id']}.dna")
+        history_files = manifest.get('versions', [])
+        if not isinstance(history_files, list):
+            raise ValueError('备份副本清单无效')
+        for item in history_files:
+            if not isinstance(item, dict) or type(item.get('id')) is not int or item['id'] <= 0 or type(item.get('size')) is not int or item['size'] < 0 or not isinstance(item.get('sha256'), str):
+                raise ValueError('备份副本清单无效')
+            expected.add(f"versions/{item['id']}.dna")
         names = archive.namelist()
         if len(names) != len(expected) or set(names) != expected:
             raise ValueError("备份内容与清单不一致")
@@ -997,6 +1056,8 @@ def _verify_backup_archive(path, work, extract_files=False, progress=None, cance
                 actual = {row[0] for row in snapshot.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not needed.issubset(actual):
                     raise ValueError("备份数据库缺少仓库表")
+                import versions
+                versions.verify_history(snapshot, archive, manifest, work, extract_files, cancel)
         except sqlite3.Error as exc:
             raise ValueError(f"备份数据库无法读取：{exc}") from exc
         by_id = {item["id"]: item for item in files}
@@ -1043,6 +1104,8 @@ def restore_backup(path, progress=None, cancel=None):
                                                                   progress=progress, cancel=cancel)
         with db() as c:
             old_paths = [Path(row["storage_path"]) for row in c.execute("SELECT storage_path FROM library_plasmids")]
+            import versions
+            old_paths = list(set(old_paths) | versions.version_paths(c))
         rollback_path = None
         if old_paths:
             check_cancel(cancel)
@@ -1053,6 +1116,7 @@ def restore_backup(path, progress=None, cancel=None):
         STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         created_paths = []
         nonce = uuid4().hex[:8]
+        head_map = {}
         try:
             with closing(sqlite3.connect(snapshot_path)) as restored:
                 columns = {row[1] for row in restored.execute("PRAGMA table_info(library_plasmids)")}
@@ -1063,6 +1127,8 @@ def restore_backup(path, progress=None, cancel=None):
                     report_progress(progress, "restore", index - 1, len(records), "正在恢复质粒原件")
                     stored_name = f"Plasmora-{record['id']}-{record['sha256'][:12]}-{nonce}.dna"
                     target = STORAGE_ROOT / stored_name
+                    previous_head = restored.execute('SELECT storage_path FROM library_plasmids WHERE id=?', (record['id'],)).fetchone()[0]
+                    head_map[record['id']] = (previous_head, target)
                     with (Path(work) / f"{record['id']}.dna").open("rb") as source, target.open("xb") as output:
                         created_paths.append(target)
                         shutil.copyfileobj(source, output)
@@ -1072,6 +1138,7 @@ def restore_backup(path, progress=None, cancel=None):
                 restored.commit()
                 migrate_plasmid_uniqueness(restored)
                 init_primer_index(restored)
+                versions.restore_backup_history(restored, work, head_map, created_paths)
                 restored.commit()
                 if restored.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("恢复后的数据库完整性检查失败")
@@ -1197,6 +1264,8 @@ def recover_storage_migration():
         target_root = Path(data["target"]).resolve()
         with db() as c:
             referenced = {Path(row[0]).resolve() for row in c.execute("SELECT storage_path FROM library_plasmids")}
+            import versions
+            referenced |= {path.resolve() for path in versions.version_paths(c)}
         for name in data.get("created", []):
             path = Path(name).resolve()
             if target_root in path.parents and path not in referenced:
@@ -1217,7 +1286,8 @@ def set_storage_directory(path, progress=None, cancel=None):
     with LOCK:
         with db() as c:
             items = c.execute("SELECT id,stored_name,storage_path,sha256,file_size FROM library_plasmids ORDER BY id").fetchall()
-        required = sum(item["file_size"] for item in items) + 16 * 1024 * 1024
+            history_size = c.execute('SELECT COALESCE(SUM(file_size),0)*2 FROM plasmid_versions').fetchone()[0]
+        required = sum(item["file_size"] for item in items) + history_size + 16 * 1024 * 1024
         if items and shutil.disk_usage(target_dir).free < required:
             raise OSError("目标磁盘空间不足，无法安全迁移整个仓库")
         moved_rows, created_paths = [], []
@@ -1251,10 +1321,14 @@ def set_storage_directory(path, progress=None, cancel=None):
                     # safe_storage_name should have selected a free name; guard against a race.
                     raise FileExistsError(f"目标文件已存在：{new_path}")
                 moved_rows.append((str(new_path), name, item["id"], old_path))
+            import versions
+            with db() as c:
+                history_changes, history_old = versions.stage_migration(c, target_dir, moved_rows, created_paths, journal, progress, cancel)
             check_cancel(cancel)
             with db() as c:
                 c.executemany("UPDATE library_plasmids SET storage_path=?,stored_name=? WHERE id=?",
                               [(new_path, name, item_id) for new_path, name, item_id, _ in moved_rows])
+                c.executemany('UPDATE plasmid_versions SET path=?,snapshot_path=?,file_mtime_ns=? WHERE id=?', history_changes)
                 c.execute("INSERT INTO app_settings(key,value) VALUES('storage_dir',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(target_dir),))
             STORAGE_ROOT = target_dir
         except Exception:
@@ -1263,7 +1337,7 @@ def set_storage_directory(path, progress=None, cancel=None):
             (LOCAL_DATA / "storage-migration.json").unlink(missing_ok=True)
             raise
         # Remove only managed copies still inside the old storage directory.
-        for _, _, _, old_path in moved_rows:
+        for old_path in {row[3] for row in moved_rows} | history_old:
             try:
                 if old_dir in old_path.resolve().parents:
                     old_path.unlink(missing_ok=True)
@@ -1368,6 +1442,19 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"sort": row["value"] if row and row["value"] in SORT_ORDERS else "name_asc"})
         elif route == "/api/settings/close_behavior":
             self.send_json({"behavior": get_close_behavior()})
+        elif route == "/api/settings/daily_versions":
+            import versions
+            self.send_json({"enabled": versions.enabled()})
+        elif re.fullmatch(r"/api/plasmids/\d+/versions(?:/\d+/preview)?", route):
+            import versions
+            parts = route.split('/')
+            try:
+                item_id = int(parts[3])
+                self.send_json(versions.preview(item_id, int(parts[5])) if len(parts) > 5 else {"versions": versions.list_versions(item_id)})
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, 404)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, 400)
         elif route == "/api/groups":
             with db() as c:
                 rows = c.execute("SELECT g.id,g.name,COUNT(pg.plasmid_id) AS count FROM groups g LEFT JOIN plasmid_groups pg ON pg.group_id=g.id GROUP BY g.id ORDER BY g.name COLLATE NOCASE").fetchall()
@@ -1400,7 +1487,7 @@ class Handler(SimpleHTTPRequestHandler):
                     shutil.copyfileobj(f, self.wfile)
             except Exception:
                 self.send_error(404)
-        elif route in ("/", "/index.html", "/app.js", "/enhancements.js", "/styles.css", "/compat.css", "/themes.css", "/app-icon.png"):
+        elif route in ("/", "/index.html", "/app.js", "/enhancements.js", "/history.js", "/styles.css", "/compat.css", "/themes.css", "/app-icon.png"):
             super().do_GET()
         else:
             self.send_error(404)
@@ -1409,7 +1496,10 @@ class Handler(SimpleHTTPRequestHandler):
         route = urlparse(self.path).path
         data = self.body()
         try:
-            if route == "/api/groups":
+            if route == "/api/settings/daily_versions":
+                import versions
+                self.send_json(versions.set_enabled(data.get('enabled')))
+            elif route == "/api/groups":
                 name = str(data.get("name", "")).strip()
                 if not name:
                     self.send_json({"error": "分组名称不能为空"}, 400)

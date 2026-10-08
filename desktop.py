@@ -88,6 +88,10 @@ class DesktopApi:
             return self._repository_watcher.take_updates()
         return {"updated": [], "errors": []}
 
+    def set_daily_versions(self, enabled):
+        import versions
+        return self._run_operation('versioning', lambda progress, cancel: versions.set_enabled(enabled, progress, cancel))
+
     def start_file_drag(self, plasmid_id):
         """Offer the managed DNA file to Explorer as a copy-only shell drag."""
         staging_dir = None
@@ -344,7 +348,8 @@ class DesktopApi:
 
     def open_in_snapgene(self, plasmid_id):
         try:
-            path = server.managed_plasmid_path(int(plasmid_id))
+            import versions
+            path = versions.prepare_edit(int(plasmid_id))
             executable = find_snapgene()
             if executable:
                 subprocess.Popen([str(executable), str(path)])
