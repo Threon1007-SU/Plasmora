@@ -11,9 +11,30 @@ function drawHistoryList(){
  $('#history-title').textContent=state.plasmids.find(p=>p.id===state.historyPlasmid)?.name||'文件副本';
  $('#history-count').textContent=`${state.historyItems.length} 个`;
  $('#history-list').innerHTML=renderVersionEntries(state.historyItems,state.historyVersion);
- $('#history-list').querySelectorAll('[data-version-id]').forEach(button=>button.onclick=()=>{
-  state.historyVersion=Number(button.dataset.versionId);state.activeFeature=null;state.featureQuery='';state.primerQuery='';
-  drawHistoryList();renderDetail();
+ $('#history-list').querySelectorAll('[data-version-id]').forEach(button=>{
+  const versionId=Number(button.dataset.versionId);
+  button.onclick=()=>{
+   state.historyVersion=versionId;state.activeFeature=null;state.featureQuery='';state.primerQuery='';
+   drawHistoryList();renderDetail();
+  };
+  button.oncontextmenu=event=>{
+   event.preventDefault();event.stopPropagation();
+   const plasmidId=state.historyPlasmid;
+   button.onclick();
+   openVersionActions(plasmidId,versionId,event);
+  };
+ });
+}
+
+function openVersionActions(plasmidId,versionId,event){
+ openContextMenu(event,[['snapgene','在 SnapGene 中打开']],async action=>{
+  if(action!=='snapgene')return;
+  if(!window.pywebview?.api?.open_in_snapgene){toast('请在桌面程序中打开 SnapGene');return}
+  try{
+   const result=await window.pywebview.api.open_in_snapgene(plasmidId,versionId);
+   if(result.error)throw new Error(result.error);
+   toast(result.method==='association'?'已用 .dna 关联程序打开所选副本':'已在 SnapGene 中打开所选副本');
+  }catch(error){toast(error.message)}
  });
 }
 
