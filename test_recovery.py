@@ -168,7 +168,7 @@ class DamagedRepositoryRecoveryTest(unittest.TestCase):
         name = Path(result['rollbackPath']).name
         with patch.object(desktop.os, 'startfile', create=True) as launch:
             self.assertTrue(api.open_recovery_archive(name)['ok'])
-            self.assertEqual(Path(launch.call_args.args[0]), Path(result['rollbackPath']))
+            self.assertEqual(Path(launch.call_args.args[0]).resolve(), Path(result['rollbackPath']).resolve())
             launch.reset_mock()
             for invalid in ('../'+name, 'Before-restore-missing.recovery.zip', 'wrong.zip'):
                 self.assertIn('error', api.open_recovery_archive(invalid))
