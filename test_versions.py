@@ -266,6 +266,33 @@ class DailyVersionsTest(unittest.TestCase):
             self.assertIn('error', api.open_in_snapgene(self.item_id, 999999))
             launch.assert_not_called()
 
+    def test_export_cannot_overwrite_current_history_or_snapshots(self):
+        versions.set_enabled(True)
+        versions.prepare_edit(self.item_id).write_bytes(primer_dna('Day1-F'))
+        server.sync_plasmid_if_changed(self.item_id)
+        self.day = '2026-10-09'
+        versions.prepare_edit(self.item_id).write_bytes(primer_dna('Latest-F'))
+        server.sync_plasmid_if_changed(self.item_id)
+        other = self.root / 'other.dna'
+        other.write_bytes(primer_dna('Other-F'))
+        other_id = server.import_one(other)['id']
+        with server.db() as c:
+            paths = versions.version_paths(c)
+        saved = {path: path.read_bytes() for path in paths}
+        destinations = list(paths) + [self.original.parent / 'unused' / '..' / self.original.name]
+        import os
+        if os.name == 'nt':
+            destinations.append(Path(str(self.original).swapcase()))
+        for path in destinations:
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, '不能覆盖'):
+                server.export_one_plasmid(other_id, path)
+            self.assertEqual({path: path.read_bytes() for path in paths}, saved)
+        versions.sync_family(self.item_id)
+        self.assertEqual(server.preview_plasmid(self.item_id)['primers'][0]['name'], 'Latest-F')
+        external = self.root / 'exports' / 'outside.dna'
+        server.export_one_plasmid(other_id, external)
+        self.assertEqual(external.read_bytes(), other.read_bytes())
+
 
 if __name__ == '__main__':
     unittest.main()

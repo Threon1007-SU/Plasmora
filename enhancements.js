@@ -1,6 +1,6 @@
 const progressTitles = {
   import: '正在导入质粒', export: '正在导出质粒', sync: '正在同步仓库', backup: '正在创建备份',
-  verify: '正在校验备份', restore: '正在恢复仓库', move: '正在迁移原件', versioning: '正在保护原件并启用按日副本'
+  verify: '正在校验备份', restore: '正在恢复仓库', preserve: '正在保全受损仓库', move: '正在迁移原件', versioning: '正在保护原件并启用按日副本'
 };
 
 window.plasmoraProgress = function (update) {
@@ -40,12 +40,15 @@ document.querySelector('#cancel-operation').onclick = async () => {
 let syncingRepository = false;
 async function applyRepositoryUpdates(result, automatic = false) {
   if (result.updated.length) {
-    for (const id of result.updated) delete state.previews[id];
+    for (const id of result.updated) {
+      delete state.previews[id];
+      invalidateVersionPreviews(id);
+    }
     await loadPlasmids();
     renderList();
     if (state.view === 'history' && result.updated.includes(state.historyPlasmid)) {
       await refreshHistory();
-    } else if (result.updated.includes(state.selected)) {
+    } else if (state.view !== 'history' && result.updated.includes(state.selected)) {
       state.activeFeature = null;
       renderDetail();
     }
@@ -175,7 +178,7 @@ document.querySelector('#trash-tools').onclick = showTrash;
 
 function confirmRestore(info) {
   openActionDialog('确认恢复备份',
-    `备份创建于 ${info.createdAt || '未知时间'}，包含 ${info.count} 个质粒。当前仓库会先生成自动备份。`,
+    `备份创建于 ${info.createdAt || '未知时间'}，包含 ${info.count} 个质粒。当前仓库会先保存；若原仓库缺失或损坏，则保全原索引与可读文件，并保留旧文件。`,
     '<div class="dialog-buttons"><button class="button" id="cancel-restore">取消</button><button class="button danger-button" id="confirm-restore">确认恢复</button></div>',
     'CONFIRM RESTORE');
   document.querySelector('#cancel-restore').onclick = closeActionDialog;
@@ -190,6 +193,7 @@ function confirmRestore(info) {
       }
       if (result.error) throw new Error(result.error);
       state.previews = {};
+      resetHistoryState();
       state.noteDrafts = {};
       state.selected = null;
       state.view = 'library';
@@ -201,13 +205,36 @@ function confirmRestore(info) {
       renderSynonymClusters();
       renderThemes();
       closeActionDialog();
-      toast(`已恢复 ${result.count} 个质粒；旧仓库已自动备份`);
+      if (result.rollbackIncomplete) {
+        showRecoveryResult(result);
+        toast(`已恢复 ${result.count} 个质粒；受损原仓库已保全`);
+      } else {
+        toast(`已恢复 ${result.count} 个质粒；旧仓库已自动备份`);
+      }
     } catch (error) {
       toast(error.message);
     } finally {
       button.disabled = false;
     }
   };
+}
+
+async function openRecoveryArchive(name) {
+  try {
+    if (!window.pywebview?.api?.open_recovery_archive) throw new Error('请在桌面程序中查看保全包');
+    const result = await window.pywebview.api.open_recovery_archive(name);
+    if (result.error) throw new Error(result.error);
+  } catch (error) {toast(error.message)}
+}
+
+function showRecoveryResult(result) {
+  const name = String(result.rollbackPath).split(/[\\/]/).pop();
+  openActionDialog('恢复完成：原仓库不完整',
+    `已恢复 ${result.count} 个质粒。原仓库已保全 ${result.preservedFileCount} 个可读文件，${result.unavailableFileCount} 个文件无法读取；原索引及缺失记录已保留，旧文件未清理。`,
+    `<p>此保全包不能作为完整备份直接恢复。打开后可按 manifest.json 的清单提取有效 .dna 文件并重新导入；原备注与分组保存在 library.sqlite3 中。</p><div class="feature-detail">${esc(result.rollbackPath)}</div>`+
+    '<div class="dialog-buttons"><button class="button" id="close-recovery">关闭</button><button class="button button-gold" id="open-recovery">打开保全包</button></div>', 'RECOVERY');
+  document.querySelector('#close-recovery').onclick = closeActionDialog;
+  document.querySelector('#open-recovery').onclick = () => openRecoveryArchive(name);
 }
 
 function openEnhancedDataTools() {
@@ -248,12 +275,14 @@ async function showRollbackBackups() {
   try {
     const result = await api('/api/rollback');
     const content = result.items.length ? result.items.map(item =>
-      `<div class="trash-row"><div><strong>${esc(item.name)}</strong><small>${(item.size / 1024 / 1024).toFixed(1)} MB</small></div><button class="button" data-rollback="${esc(item.name)}">选择恢复</button></div>`
+      `<div class="trash-row"><div><strong>${esc(item.name)}</strong><small>${(item.size / 1024 / 1024).toFixed(1)} MB${item.incomplete?' · 保全包：原仓库不完整，含原索引与可读文件':''}</small></div>`+
+      (item.incomplete?`<button class="button" data-recovery="${esc(item.name)}">打开保全包</button>`:`<button class="button" data-rollback="${esc(item.name)}">选择恢复</button>`)+ '</div>'
     ).join('') : '<div class="no-results">尚无恢复前自动备份</div>';
-    openActionDialog('恢复前自动备份', '每次恢复旧备份前，程序会保存当前仓库。',
+    openActionDialog('恢复前自动备份', '完整自动备份可以直接恢复；受损仓库保全包用于提取原索引和可读文件。',
       `<div class="trash-list">${content}</div><div class="dialog-buttons"><button class="button" id="back-to-backups">返回</button></div>`,
       'ROLLBACK');
     document.querySelector('#back-to-backups').onclick = openEnhancedDataTools;
+    document.querySelectorAll('[data-recovery]').forEach(button => button.onclick = () => openRecoveryArchive(button.dataset.recovery));
     document.querySelectorAll('[data-rollback]').forEach(button => button.onclick = async () => {
       try {
         const info = await window.pywebview.api.choose_rollback_for_restore(button.dataset.rollback);

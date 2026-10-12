@@ -70,6 +70,13 @@ assert.match(historyMarkup,/history-card selected/);
 assert.match(historyMarkup,/最新版本/);
 console.log('History list escaping, selection and latest marker: OK');
 
+function makeHistoryScope(extra){
+  const scope={Date,esc:historyContext.esc,...extra};
+  vm.runInNewContext(historySource.slice(0,historySource.indexOf("$('#history-back').onclick"))+
+    '\nglobalThis.historyHooks={invalidateVersionPreviews,resetHistoryState,loadVersionPreview,openHistory};',scope);
+  return scope;
+}
+
 async function verifySelectedVersionLaunch(){
   const calls=[],messages=[];
   let select;
@@ -93,11 +100,12 @@ async function verifyBackgroundRepositoryUpdates() {
   const timers = [];
   const messages = [];
   let manualSyncs = 0, notifications = {updated: [], errors: []};
-  let listRenders = 0, detailRenders = 0, progressHidden = true;
+  let listRenders = 0, detailRenders = 0, historyRefreshes = 0, progressHidden = true;
   const elements = new Map();
   const backgroundState = {storage: {}, selected: 2, activeFeature: 3,
     previews: {1: {cached: true}, 2: {cached: true}}, noteDrafts: {2: 'unsaved note'},
-    plasmids: [{id: 2}]};
+    plasmids: [{id: 2}], view:'library', historyPlasmid:null,
+    versionPreviews:{'1:2':{primer:'Old-F'},'1:3':{loading:true},'2:4':{cached:true},'10:1':{cached:true}}};
   const savedNotes = [];
   let noteSaveFails = false;
   const background = {
@@ -119,6 +127,9 @@ async function verifyBackgroundRepositoryUpdates() {
     setInterval: (handler, delay) => timers.push([handler, delay]),
   };
   const enhancement = fs.readFileSync('enhancements.js', 'utf8');
+  const backgroundHistory=makeHistoryScope({state:backgroundState});
+  background.invalidateVersionPreviews=backgroundHistory.historyHooks.invalidateVersionPreviews;
+  background.refreshHistory=async()=>historyRefreshes++;
   vm.runInNewContext(enhancement.slice(0, enhancement.indexOf('async function showTrash()')), background);
   assert.equal(listeners.filter(([event]) => event === 'focus').length, 0);
   assert.equal(timers.length, 1);
@@ -131,6 +142,10 @@ async function verifyBackgroundRepositoryUpdates() {
   assert.equal(detailRenders, 0, 'Unrelated edits should not replace the open preview');
   assert.equal(backgroundState.previews[1], undefined);
   assert.equal(backgroundState.previews[2].cached, true);
+  assert.equal(backgroundState.versionPreviews['1:2'],undefined,'Updates must clear historical previews while outside history');
+  assert.equal(backgroundState.versionPreviews['1:3'],undefined);
+  assert.equal(backgroundState.versionPreviews['2:4'].cached,true);
+  assert.equal(backgroundState.versionPreviews['10:1'].cached,true,'Family prefixes must not collide');
   assert.equal(backgroundState.noteDrafts[2], 'unsaved note');
   notifications = {updated: [2], errors: []};
   progressHidden = false;
@@ -141,6 +156,16 @@ async function verifyBackgroundRepositoryUpdates() {
   assert.equal(detailRenders, 1);
   assert.equal(backgroundState.activeFeature, null);
   assert.equal(backgroundState.noteDrafts[2], 'unsaved note');
+  backgroundState.view='history';backgroundState.historyPlasmid=2;
+  backgroundState.versionPreviews['1:2']={primer:'Old-F'};
+  notifications={updated:[1],errors:[]};
+  await timers[0][0]();
+  assert.equal(backgroundState.versionPreviews['1:2'],undefined,'Clear updated family even when another history is visible');
+  assert.equal(historyRefreshes,0);
+  assert.equal(detailRenders,1,'Other history updates must not redraw the visible preview');
+  notifications={updated:[2],errors:[]};
+  await timers[0][0]();
+  assert.equal(historyRefreshes,1,'Refresh visible history after invalidating its cache');
   await elements.get('#sync-repository').onclick();
   assert.equal(manualSyncs, 1, 'Manual full synchronization remains available');
   const prepared = await background.window.plasmoraPrepareForUpdate();
@@ -161,3 +186,63 @@ async function verifyBackgroundRepositoryUpdates() {
   console.log('Update shutdown saves notes and preserves failed drafts: OK');
 }
 verifyBackgroundRepositoryUpdates().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function verifyHistoryCacheAndRecovery(){
+  const state={view:'library',selected:1,groupFilter:null,versionPreviews:{'1:2':{primer:'Old-F'},'2:7':{keep:true}}};
+  let requested=0,pendingPreview;
+  const scope=makeHistoryScope({state,closeContextMenu:()=>{},toast:message=>{throw new Error(message)},
+    $:()=>({replaceChildren:()=>{}}),renderDetail:()=>{},
+    api:async path=>{
+      if(path.endsWith('/preview')){requested++;return {primer:'New-F'}}
+      return {versions:[{id:2,latest:true}]};
+    }});
+  scope.drawHistoryList=()=>{};
+  scope.render=()=>{pendingPreview=scope.historyHooks.loadVersionPreview(1,2)};
+  await scope.historyHooks.openHistory(1,2);
+  await pendingPreview;
+  assert.equal(requested,1,'Re-entering history must request fresh content');
+  assert.equal(state.versionPreviews['1:2'].primer,'New-F');
+  assert.equal(state.versionPreviews['2:7'].keep,true);
+
+  let resolveOld;
+  scope.api=()=>new Promise(resolve=>{resolveOld=resolve});
+  delete state.versionPreviews['1:2'];
+  const oldRequest=scope.historyHooks.loadVersionPreview(1,2);
+  scope.historyHooks.invalidateVersionPreviews(1);
+  scope.api=async()=>({primer:'Newest-F'});
+  await scope.historyHooks.loadVersionPreview(1,2);
+  resolveOld({primer:'Stale-F'});await oldRequest;
+  assert.equal(state.versionPreviews['1:2'].primer,'Newest-F','Late responses cannot repopulate invalidated caches');
+
+  const elements=new Map(),dialogs=[];
+  scope.document={querySelector:selector=>{
+    if(!elements.has(selector))elements.set(selector,{});
+    return elements.get(selector);
+  }};
+  scope.window={pywebview:{api:{restore_backup:async()=>({ok:true,count:1,rollbackIncomplete:true,
+    preservedFileCount:2,unavailableFileCount:1,rollbackPath:'C:\\local\\Before-restore-example.recovery.zip'})}}};
+  scope.openActionDialog=(...args)=>dialogs.push(args);
+  scope.closeActionDialog=()=>{};scope.toast=()=>{};
+  for(const name of ['loadSettings','loadPlasmids','loadGroups','loadSynonymClusters'])scope[name]=async()=>{};
+  scope.render=()=>{};scope.renderSynonymClusters=()=>{};scope.renderThemes=()=>{};
+  state.noteDrafts={1:'old'};state.previews={1:{old:true}};state.historyItems=[{id:2}];state.historyReturn={view:'history'};
+  const enhancement=fs.readFileSync('enhancements.js','utf8');
+  vm.runInNewContext(enhancement.slice(enhancement.indexOf('function confirmRestore('),enhancement.indexOf('function openEnhancedDataTools(')),scope);
+  scope.api=()=>new Promise(resolve=>{resolveOld=resolve});
+  delete state.versionPreviews['1:2'];
+  const preRestoreRequest=scope.historyHooks.loadVersionPreview(1,2);
+  scope.confirmRestore({count:1,createdAt:'2026-10-12'});
+  await elements.get('#confirm-restore').onclick();
+  resolveOld({primer:'Before-restore-F'});await preRestoreRequest;
+  assert.equal(Object.keys(state.versionPreviews).length,0,'Restore clears all version caches, including in-flight results');
+  assert.equal(state.historyItems.length,0);
+  assert.equal(state.historyPlasmid,null);
+  assert.equal(state.historyVersion,null);
+  assert.equal(state.historyReturn,undefined);
+  assert.equal(state.view,'library');
+  assert.equal(dialogs.at(-1)[0],'恢复完成：原仓库不完整');
+  assert.match(dialogs.at(-1)[2],/不能作为完整备份直接恢复/);
+  assert.equal(typeof elements.get('#open-recovery').onclick,'function');
+  console.log('History re-entry, in-flight invalidation, restore reset and incomplete recovery notice: OK');
+}
+verifyHistoryCacheAndRecovery().catch(error=>{console.error(error);process.exitCode=1});
