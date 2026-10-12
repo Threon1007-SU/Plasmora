@@ -310,6 +310,19 @@ class DesktopApi:
             server.LOGGER.exception("恢复仓库失败")
             return {"error": str(exc)}
 
+    def open_recovery_archive(self, name):
+        try:
+            folder = (server.LOCAL_DATA / 'rollback').resolve()
+            if not isinstance(name, str) or Path(name).name != name or not name.startswith('Before-restore-') or not name.endswith('.recovery.zip'):
+                raise ValueError('保全包名称无效')
+            path = (folder / name).resolve()
+            if path.parent != folder or not path.is_file():
+                raise FileNotFoundError('找不到保全包')
+            os.startfile(str(path))
+            return {'ok': True}
+        except Exception as error:
+            return {'error': str(error)}
+
     def export_plasmids(self, item_ids):
         if not isinstance(item_ids, list) or not item_ids:
             return {"error": "请至少选择一个质粒"}
