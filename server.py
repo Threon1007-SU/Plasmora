@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -1094,8 +1094,9 @@ def list_rollback_backups():
     folder = LOCAL_DATA / "rollback"
     if not folder.is_dir():
         return []
-    return [{"name": path.name, "size": path.stat().st_size}
-            for path in sorted(folder.glob("Before-restore-*.plasmora"), reverse=True) if path.is_file()]
+    paths = list(folder.glob('Before-restore-*.plasmora')) + list(folder.glob('Before-restore-*.recovery.zip'))
+    return [{"name": path.name, "size": path.stat().st_size, 'incomplete': path.name.endswith('.recovery.zip')}
+            for path in sorted(paths, reverse=True) if path.is_file()]
 
 
 def restore_backup(path, progress=None, cancel=None):
@@ -1107,12 +1108,21 @@ def restore_backup(path, progress=None, cancel=None):
             import versions
             old_paths = list(set(old_paths) | versions.version_paths(c))
         rollback_path = None
+        protection = {'incomplete': False}
         if old_paths:
             check_cancel(cancel)
             rollback_dir = LOCAL_DATA / "rollback"
             rollback_dir.mkdir(parents=True, exist_ok=True)
             rollback_path = rollback_dir / f"Before-restore-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:6]}.plasmora"
-            backup_library(rollback_path, progress, cancel)
+            try:
+                backup_library(rollback_path, progress, cancel)
+            except (ValueError, FileNotFoundError) as error:
+                # Health problems in the current repository must not prevent
+                # recovery from an independently verified backup. Preserve the
+                # unfiltered index and readable public/snapshot files first.
+                import recovery
+                rollback_path = rollback_path.with_suffix('.recovery.zip')
+                protection = recovery.capture_repository(rollback_path, error, progress, cancel)
         STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
         created_paths = []
         nonce = uuid4().hex[:8]
@@ -1149,7 +1159,7 @@ def restore_backup(path, progress=None, cancel=None):
                 target.unlink(missing_ok=True)
             raise
         root = STORAGE_ROOT.resolve()
-        for path in old_paths:
+        for path in ([] if protection['incomplete'] else old_paths):
             try:
                 if root in path.resolve().parents and path not in created_paths:
                     path.unlink(missing_ok=True)
@@ -1157,7 +1167,10 @@ def restore_backup(path, progress=None, cancel=None):
                 pass
     report_progress(progress, "restore", len(records), len(records), "恢复完成")
     return {"ok": True, "count": len(records), "createdAt": manifest.get("createdAt", ""),
-            "rollbackPath": str(rollback_path) if rollback_path else None}
+            "rollbackPath": str(rollback_path) if rollback_path else None,
+            'rollbackIncomplete': protection['incomplete'],
+            'preservedFileCount': protection.get('readableCount', 0),
+            'unavailableFileCount': protection.get('unavailableCount', 0)}
 
 
 def export_one_plasmid(item_id, destination):
@@ -1168,8 +1181,10 @@ def export_one_plasmid(item_id, destination):
         row = c.execute("SELECT file_name,storage_path,sha256,file_size FROM library_plasmids WHERE id=?", (item_id,)).fetchone()
         if not row:
             raise FileNotFoundError("仓库中已没有这条质粒记录")
-        managed_paths = {os.path.normcase(str(Path(item["storage_path"]).resolve()))
-                         for item in c.execute("SELECT storage_path FROM library_plasmids")}
+        import versions
+        paths = {Path(item['storage_path']) for item in c.execute('SELECT storage_path FROM library_plasmids')}
+        paths |= versions.version_paths(c)
+        managed_paths = {os.path.normcase(str(path.resolve())) for path in paths}
         if os.path.normcase(str(destination)) in managed_paths:
             raise ValueError("不能覆盖仓库中受管理的质粒文件")
         source = Path(row["storage_path"])

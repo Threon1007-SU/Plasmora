@@ -3,6 +3,15 @@ function formatVersionTime(value){
  return Number.isNaN(date.getTime())?String(value||'—'):date.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 }
 
+function invalidateVersionPreviews(id){
+ for(const key of Object.keys(state.versionPreviews))if(key.startsWith(`${id}:`))delete state.versionPreviews[key];
+}
+
+function resetHistoryState(){
+ state.versionPreviews={};state.historyItems=[];state.historyPlasmid=null;state.historyVersion=null;
+ delete state.historyReturn;
+}
+
 function renderVersionEntries(items,selected){
  return items.map(version=>`<button type="button" class="history-card ${version.id===selected?'selected':''}" data-version-id="${version.id}"><time>${esc(formatVersionTime(version.time))}</time><strong>${esc(version.name)}</strong><span>${version.latest?'最新版本 · ':''}${version.original?'导入原件':'日副本'} · ${(version.size/1024).toFixed(1)} KB</span></button>`).join('');
 }
@@ -42,6 +51,7 @@ async function openHistory(id,versionId=null){
  closeContextMenu();
  try{
   const result=await api(`/api/plasmids/${id}/versions`);
+  invalidateVersionPreviews(id);
   if(state.view!=='history')state.historyReturn={view:state.view,groupFilter:state.groupFilter,selected:state.selected};
   state.historyPlasmid=id;state.historyItems=result.versions;
   state.historyVersion=result.versions.some(v=>v.id===versionId)?versionId:(result.versions.find(v=>v.latest)||result.versions[0])?.id??null;
@@ -52,8 +62,14 @@ async function openHistory(id,versionId=null){
 
 async function loadVersionPreview(id,versionId){
  const key=`${id}:${versionId}`;
- try{state.versionPreviews[key]=await api(`/api/plasmids/${id}/versions/${versionId}/preview`)}
- catch(error){state.versionPreviews[key]={error:error.message}}
+ const request=state.versionPreviews[key]||{loading:true};state.versionPreviews[key]=request;
+ let preview;
+ try{preview=await api(`/api/plasmids/${id}/versions/${versionId}/preview`)}
+ catch(error){preview={error:error.message}}
+ // Notifications and restores can invalidate a request while it is in flight.
+ // A late response must not repopulate the cache or replace a newer preview.
+ if(state.versionPreviews[key]!==request)return;
+ state.versionPreviews[key]=preview;
  if(state.view==='history'&&state.historyPlasmid===id&&state.historyVersion===versionId)renderDetail();
 }
 
@@ -61,7 +77,7 @@ async function refreshHistory(){
  const id=state.historyPlasmid,result=await api(`/api/plasmids/${id}/versions`);
  if(state.view!=='history'||state.historyPlasmid!==id)return;
  state.historyItems=result.versions;
- for(const key of Object.keys(state.versionPreviews))if(key.startsWith(`${id}:`))delete state.versionPreviews[key];
+ invalidateVersionPreviews(id);
  if(!result.versions.some(v=>v.id===state.historyVersion))state.historyVersion=(result.versions.find(v=>v.latest)||result.versions[0])?.id??null;
  drawHistoryList();renderDetail();
 }
