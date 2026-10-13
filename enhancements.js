@@ -134,17 +134,19 @@ async function showTrash() {
   try {
     const result = await api('/api/trash');
     const content = result.items.length ? result.items.map(item =>
-      `<div class="trash-row"><div><strong>${esc(item.name)}</strong><small>${item.reason === 'replaced' ? '替换前的版本' : '已删除'} · ${esc(item.deletedAt.replace('T', ' '))}</small></div>` +
+      `<div class="trash-row"><div><strong>${esc(item.name)}</strong><small>${item.reason === 'version_deleted' ? '已删除的副本' : item.reason === 'replaced' ? '替换前的版本' : '已删除'} · ${esc(item.deletedAt.replace('T', ' '))}</small></div>` +
       `<div class="trash-actions"><button class="button" data-restore="${item.id}">恢复</button><button class="delete-link" data-purge="${item.id}">永久删除</button></div></div>`
     ).join('') : '<div class="no-results">回收站是空的</div>';
-    openActionDialog('回收站', '删除的质粒和替换前的版本可以在这里恢复。',
+    openActionDialog('回收站', '删除的质粒、副本和替换前的版本可以在这里恢复。',
       `<div class="trash-list">${content}</div><div class="dialog-buttons"><button class="button" id="close-trash">关闭</button></div>`, 'RECOVERY');
     document.querySelector('#close-trash').onclick = closeActionDialog;
     document.querySelectorAll('[data-restore]').forEach(button => button.onclick = async () => {
       button.disabled = true;
       try {
         const restored = await api(`/api/trash/${button.dataset.restore}/restore`, {method: 'POST', body: '{}'});
+        if(restored.kind==='version')invalidateVersionPreviews(restored.id);
         await Promise.all([loadPlasmids(), loadGroups()]);
+        if(restored.kind==='version'&&state.view==='history'&&state.historyPlasmid===restored.id)await refreshHistory();
         render();
         toast(`已恢复“${restored.name}”`);
         await showTrash();
