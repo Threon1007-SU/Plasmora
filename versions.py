@@ -2,6 +2,7 @@
 from datetime import datetime
 from pathlib import Path
 import os
+import json
 import tempfile
 from uuid import uuid4
 
@@ -17,6 +18,10 @@ def today():
 
 
 def init_schema(c):
+    columns = {row[1] for row in c.execute('PRAGMA table_info(library_plasmids)')}
+    if 'version_family_key' not in columns:
+        c.execute("ALTER TABLE library_plasmids ADD COLUMN version_family_key TEXT NOT NULL DEFAULT ''")
+    c.execute("UPDATE library_plasmids SET version_family_key=lower(hex(randomblob(16))) WHERE version_family_key=''")
     c.execute('''CREATE TABLE IF NOT EXISTS plasmid_versions (
         id INTEGER PRIMARY KEY, plasmid_id INTEGER NOT NULL REFERENCES library_plasmids(id) ON DELETE CASCADE,
         name TEXT NOT NULL, day TEXT, created_at TEXT NOT NULL, modified_at TEXT NOT NULL,
@@ -312,6 +317,99 @@ def list_versions(item_id):
         return [{'id': 0, 'name': library['file_name'], 'time': library['imported_at'], 'original': True, 'latest': True, 'size': library['file_size']}]
     return [{'id': r['id'], 'name': r['name'], 'time': r['modified_at'], 'original': bool(r['original']),
              'latest': r['path'] == library['storage_path'], 'size': r['file_size']} for r in rows]
+
+
+def delete_version(item_id, version_id):
+    with server.LOCK:
+        with server.db() as c:
+            row = c.execute('SELECT * FROM plasmid_versions WHERE id=? AND plasmid_id=?', (version_id, item_id)).fetchone()
+            if not row:
+                raise FileNotFoundError('副本已不存在；仅有一个文件时请在总仓库管理质粒')
+            if c.execute('SELECT COUNT(*) FROM plasmid_versions WHERE plasmid_id=?', (item_id,)).fetchone()[0] <= 1:
+                raise ValueError('每条质粒至少保留一个版本；删除整个质粒请在总仓库操作')
+        sync_family(item_id)  # Capture any pending edits before moving a version to trash.
+        server.init_trash()
+        archived = server.LOCAL_DATA / 'Trash' / f'{uuid4().hex}.dna'
+        trash_id = None
+        try:
+            with server.db() as c:
+                row = dict(c.execute('SELECT * FROM plasmid_versions WHERE id=? AND plasmid_id=?', (version_id, item_id)).fetchone())
+                library = c.execute('SELECT * FROM library_plasmids WHERE id=?', (item_id,)).fetchone()
+                latest = row['path'] == library['storage_path']
+                replacement = None
+                if latest:
+                    replacement = c.execute('SELECT * FROM plasmid_versions WHERE plasmid_id=? AND id<>? ORDER BY original ASC,modified_at DESC,id DESC LIMIT 1', (item_id, version_id)).fetchone()
+                    parsed = server.parse_dna(Path(replacement['snapshot_path']))
+                    if (parsed['sha256'], parsed['file_size']) != (replacement['sha256'], replacement['file_size']):
+                        raise ValueError('保留副本校验失败，已停止删除')
+                    if c.execute('SELECT 1 FROM library_plasmids WHERE file_name=? COLLATE NOCASE AND sha256=? AND id<>?',
+                                 (library['file_name'], parsed['sha256'], item_id)).fetchone():
+                        raise ValueError('保留版本与仓库中的同名质粒内容相同，请先重命名其中一份')
+                    # Restore a usable public file before selecting it as head.
+                    _restore_public(replacement)
+                    c.execute('UPDATE library_plasmids SET storage_path=?,stored_name=?,sha256=?,file_size=?,file_mtime_ns=? WHERE id=?',
+                              (replacement['path'], Path(replacement['path']).name, parsed['sha256'], parsed['file_size'], Path(replacement['path']).stat().st_mtime_ns, item_id))
+                    c.execute('DELETE FROM plasmid_tags WHERE plasmid_id=?', (item_id,))
+                    c.executemany('INSERT OR IGNORE INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)', [(item_id, tag['tag'], tag['kind']) for tag in parsed['tags']])
+                    server.save_primer_index(c, item_id, parsed)
+                copy_checked(row['snapshot_path'], archived, row['sha256'], row['file_size'])
+                if not library['version_family_key']:
+                    key = uuid4().hex
+                    c.execute('UPDATE library_plasmids SET version_family_key=? WHERE id=?', (key, item_id))
+                else:
+                    key = library['version_family_key']
+                metadata = {'kind': 'version', 'file_name': row['name'], 'plasmid_id': item_id,
+                            'family_key': key, 'version': row}
+                with server.trash_db() as trash:
+                    trash_id = trash.execute('INSERT INTO trash_items(deleted_at,reason,metadata_json,trash_path) VALUES(?,?,?,?)',
+                                            (now(), 'version_deleted', json.dumps(metadata, ensure_ascii=False), str(archived))).lastrowid
+                c.execute('DELETE FROM plasmid_versions WHERE id=?', (version_id,))
+        except Exception:
+            if trash_id is not None:
+                with server.trash_db() as trash:
+                    trash.execute('DELETE FROM trash_items WHERE id=?', (trash_id,))
+            archived.unlink(missing_ok=True)
+            raise
+        for name in ('path', 'snapshot_path'):
+            path = Path(row[name])
+            if server.STORAGE_ROOT.resolve() in path.resolve().parents:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    server.LOGGER.warning('副本已移入回收站，原路径暂时无法清理：%s', path.name)
+        return {'ok': True, 'trashId': trash_id, 'latestChanged': latest, 'name': row['name']}
+
+
+def restore_deleted_version(entry, metadata):
+    """Restore a revision to its original logical family without switching head."""
+    row = metadata['version']
+    item_id = metadata['plasmid_id']
+    source = Path(entry['trash_path'])
+    if (server.LOCAL_DATA / 'Trash').resolve() not in source.resolve().parents or not source.is_file():
+        raise FileNotFoundError('回收站中的副本文件不存在')
+    created = []
+    try:
+        with server.db() as c:
+            owner = c.execute('SELECT id FROM library_plasmids WHERE version_family_key=?', (metadata['family_key'],)).fetchall()
+            if not owner:
+                raise ValueError('对应质粒已不存在，请先从回收站恢复该质粒')
+            if len(owner) != 1:
+                raise ValueError('所属质粒存在多个恢复记录，请先整理重复记录')
+            item_id = owner[0]['id']
+            saved = snapshot(source, row['sha256'], row['file_size']); created.append(saved)
+            target = server.STORAGE_ROOT / server.safe_storage_name(row['name'], server.STORAGE_ROOT)
+            copy_checked(saved, target, row['sha256'], row['file_size']); created.append(target)
+            version_id = c.execute('''INSERT INTO plasmid_versions(plasmid_id,name,day,created_at,modified_at,path,snapshot_path,sha256,file_size,original,file_mtime_ns)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (item_id, row['name'], row['day'], row['created_at'], row['modified_at'],
+                str(target), str(saved), row['sha256'], row['file_size'], row['original'], target.stat().st_mtime_ns)).lastrowid
+    except Exception:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+    with server.trash_db() as trash:
+        trash.execute('DELETE FROM trash_items WHERE id=?', (entry['id'],))
+    source.unlink(missing_ok=True)
+    return {'id': item_id, 'versionId': version_id, 'name': row['name'], 'kind': 'version'}
 
 
 def preview(item_id, version_id):

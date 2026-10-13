@@ -36,7 +36,8 @@ function drawHistoryList(){
 }
 
 function openVersionActions(plasmidId,versionId,event){
- openContextMenu(event,[['snapgene','在 SnapGene 中打开']],async action=>{
+ openContextMenu(event,[['snapgene','在 SnapGene 中打开'],['delete','删除副本','danger']],async action=>{
+  if(action==='delete'){openDeleteVersion(plasmidId,versionId);return}
   if(action!=='snapgene')return;
   if(!window.pywebview?.api?.open_in_snapgene){toast('请在桌面程序中打开 SnapGene');return}
   try{
@@ -45,6 +46,25 @@ function openVersionActions(plasmidId,versionId,event){
    toast(result.method==='association'?'已用 .dna 关联程序打开所选副本':'已在 SnapGene 中打开所选副本');
   }catch(error){toast(error.message)}
  });
+}
+
+function openDeleteVersion(plasmidId,versionId){
+ const version=state.historyItems.find(v=>v.id===versionId);
+ if(!version)return;
+ if(state.historyItems.length<=1){toast('每条质粒至少保留一个版本；删除整个质粒请在总仓库操作');return}
+ openActionDialog('确认删除副本',`“${version.name}”（${formatVersionTime(version.time)}）将移入回收站。${version.latest?'删除后会切换到最近保留的版本。':''}`,
+  '<div class="dialog-buttons"><button class="button" id="cancel-version-delete">取消</button><button class="button danger-button" id="confirm-version-delete">移入回收站</button></div>','SECOND CONFIRMATION');
+ $('#cancel-version-delete').onclick=closeActionDialog;
+ $('#confirm-version-delete').onclick=async()=>{
+  const button=$('#confirm-version-delete');button.disabled=true;
+  try{
+   await api(`/api/plasmids/${plasmidId}/versions/${versionId}`,{method:'DELETE'});
+   invalidateVersionPreviews(plasmidId);delete state.previews[plasmidId];
+   await loadPlasmids();renderList();
+   if(state.view==='history'&&state.historyPlasmid===plasmidId)await refreshHistory();
+   closeActionDialog();toast('副本已移入回收站');
+  }catch(error){toast(error.message)}finally{button.disabled=false}
+ };
 }
 
 async function openHistory(id,versionId=null){

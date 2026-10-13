@@ -11,7 +11,7 @@ Plasmora 由单人维护，使用三个层级的分支：
 ## 开发变更
 
 1. 从最新 `develop` 创建短期分支。不要直接向 `main` 或 `develop` 推送代码。
-2. 本机运行 `python -B -m unittest discover -p test_*.py` 和 `node test_frontend_logic.js`。
+2. 本机运行 `python -B -m unittest discover -p test_*.py`、`node test_frontend_logic.js` 和 `node test_version_deletion_frontend.js`。
 3. 创建目标为 `develop` 的 Pull Request，等待 CI 的 `tests` 通过后用 **Squash and merge** 合并。合并后删除短期分支。
 4. 紧急发布修复可从 `main` 创建 `fix/<主题>`；修复发布后再将改动通过 PR 同步到 `develop`。
 
