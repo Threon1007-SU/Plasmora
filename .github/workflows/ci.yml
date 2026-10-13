@@ -28,3 +28,5 @@ jobs:
         run: python -B -m unittest discover -p test_*.py
       - name: Run frontend tests
         run: node test_frontend_logic.js
+      - name: Run version deletion frontend tests
+        run: node test_version_deletion_frontend.js

@@ -26,7 +26,7 @@ RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 LOCAL_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "PlasmidLibrary"
 DB_PATH = LOCAL_DATA / "library.sqlite3"
 LOG_PATH = LOCAL_DATA / "logs" / "Plasmora.log"
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 PROJECT_URL = "https://github.com/Threon1007-SU/Plasmora"
 SETTINGS_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "PlasmidLibrary"
 SETTINGS_PATH = SETTINGS_DIR / "settings.json"
@@ -185,6 +185,9 @@ def restore_trash(entry_id):
         if not entry:
             raise FileNotFoundError("回收站中没有这条记录")
         metadata = json.loads(entry["metadata_json"])
+        if metadata.get('kind') == 'version':
+            import versions
+            return versions.restore_deleted_version(entry, metadata)
         source = Path(entry["trash_path"])
         if not source.is_file() or (LOCAL_DATA / "Trash").resolve() not in source.resolve().parents:
             raise FileNotFoundError("回收站中的质粒文件不存在")
@@ -213,6 +216,10 @@ def restore_trash(entry_id):
                 else:
                     item_id = c.execute(f"INSERT INTO library_plasmids({columns}) VALUES(?,?,?,?,?,?,?,?,?,?)",
                                         values).lastrowid
+                family_key = metadata.get('version_family_key')
+                if not family_key or c.execute('SELECT 1 FROM library_plasmids WHERE version_family_key=? AND id<>?', (family_key, item_id)).fetchone():
+                    family_key = uuid4().hex
+                c.execute('UPDATE library_plasmids SET version_family_key=? WHERE id=?', (family_key, item_id))
                 c.executemany("INSERT INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, tag["tag"], tag["tag_kind"]) for tag in metadata["tags"]])
                 save_primer_index(c, item_id, parse_dna(target))
@@ -1618,7 +1625,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_DELETE(self):
         route = urlparse(self.path).path
         try:
-            if re.fullmatch(r"/api/plasmids/\d+", route):
+            if re.fullmatch(r'/api/plasmids/\d+/versions/\d+', route):
+                import versions
+                parts = route.split('/')
+                self.send_json(versions.delete_version(int(parts[3]), int(parts[5])))
+            elif re.fullmatch(r"/api/plasmids/\d+", route):
                 self.send_json({"ok": True, **delete_plasmid(int(route.rsplit("/", 1)[1]))})
             elif re.fullmatch(r"/api/trash/\d+", route):
                 purge_trash(int(route.rsplit("/", 1)[1]))
