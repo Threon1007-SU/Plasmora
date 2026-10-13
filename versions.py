@@ -390,9 +390,12 @@ def restore_deleted_version(entry, metadata):
     created = []
     try:
         with server.db() as c:
-            owner = c.execute('SELECT version_family_key FROM library_plasmids WHERE id=?', (item_id,)).fetchone()
-            if not owner or owner[0] != metadata['family_key']:
+            owner = c.execute('SELECT id FROM library_plasmids WHERE version_family_key=?', (metadata['family_key'],)).fetchall()
+            if not owner:
                 raise ValueError('对应质粒已不存在，请先从回收站恢复该质粒')
+            if len(owner) != 1:
+                raise ValueError('所属质粒存在多个恢复记录，请先整理重复记录')
+            item_id = owner[0]['id']
             saved = snapshot(source, row['sha256'], row['file_size']); created.append(saved)
             target = server.STORAGE_ROOT / server.safe_storage_name(row['name'], server.STORAGE_ROOT)
             copy_checked(saved, target, row['sha256'], row['file_size']); created.append(target)

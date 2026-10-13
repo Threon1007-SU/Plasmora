@@ -216,8 +216,10 @@ def restore_trash(entry_id):
                 else:
                     item_id = c.execute(f"INSERT INTO library_plasmids({columns}) VALUES(?,?,?,?,?,?,?,?,?,?)",
                                         values).lastrowid
-                c.execute('UPDATE library_plasmids SET version_family_key=? WHERE id=?',
-                          (metadata.get('version_family_key') or uuid4().hex, item_id))
+                family_key = metadata.get('version_family_key')
+                if not family_key or c.execute('SELECT 1 FROM library_plasmids WHERE version_family_key=? AND id<>?', (family_key, item_id)).fetchone():
+                    family_key = uuid4().hex
+                c.execute('UPDATE library_plasmids SET version_family_key=? WHERE id=?', (family_key, item_id))
                 c.executemany("INSERT INTO plasmid_tags(plasmid_id,tag,tag_kind) VALUES(?,?,?)",
                               [(item_id, tag["tag"], tag["tag_kind"]) for tag in metadata["tags"]])
                 save_primer_index(c, item_id, parse_dna(target))

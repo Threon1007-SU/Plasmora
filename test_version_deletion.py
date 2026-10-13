@@ -110,11 +110,17 @@ class VersionDeletionTest(unittest.TestCase):
         restored = server.restore_trash(deleted['trashId'])
         self.assertEqual(restored['id'], self.item_id)
         deleted = versions.delete_version(self.item_id, restored['versionId'])
-        server.delete_plasmid(self.item_id)
+        family = server.delete_plasmid(self.item_id)
         other = self.root/'unrelated.dna';other.write_bytes(primer_dna('Other-F'))
         self.assertEqual(server.import_one(other)['id'], self.item_id)
         with self.assertRaisesRegex(ValueError, '对应质粒已不存在'):
             server.restore_trash(deleted['trashId'])
+        recovered_family = server.restore_trash(family['trashId'])
+        self.assertNotEqual(recovered_family['id'], self.item_id)
+        recovered_version = server.restore_trash(deleted['trashId'])
+        self.assertEqual(recovered_version['id'], recovered_family['id'])
+        self.assertEqual(versions.preview(recovered_family['id'], recovered_version['versionId'])['primers'][0]['name'], 'Yesterday-F')
+        self.assertEqual(server.preview_plasmid(self.item_id)['primers'][0]['name'], 'Other-F')
 
     def test_purge_version_trash_only_removes_archived_copy(self):
         rows = self.build_history()
